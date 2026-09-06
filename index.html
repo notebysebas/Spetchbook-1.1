@@ -641,8 +641,15 @@ body.pages-open:not(.views-open):not(.narrow-mode) #lcl-float-group{bottom:100px
    (−53..628, centre 41px lower). The asymmetry reads as looking slightly down
    into an open book, which is the second-order cue. Secondary to the
    perspective value, but free. */
-#fb-page{position:relative;flex:0 0 auto;perspective:880px;perspective-origin:50% 28%;
-  touch-action:none;cursor:pointer}
+/* NO `perspective` PROPERTY HERE ANY MORE (v112d). An ancestor perspective is
+   applied by the compositor, and a leaf promoted to its own layer by
+   will-change + per-frame JS transform writes was being rasterised flat by the
+   WebView — the gesture turn rotated with no depth at all while the
+   transition-driven button turn kept it. Perspective is now a perspective()
+   FUNCTION inside the leaf's own transform, which travels with the element and
+   cannot be dropped by an ancestor's rendering context. Value comes from
+   _fbSetPersp(). */
+#fb-page{position:relative;flex:0 0 auto;touch-action:none;cursor:pointer}
 #fb-static,#fb-under,.fb-face{position:absolute;top:0;right:0;bottom:0;left:0;border-radius:3px;
   background-color:#cdb899;background-size:cover;background-position:center;background-repeat:no-repeat}
 /* Tight and weak on purpose. The previous 0 8px 30px rgba(0,0,0,.55) drew a
@@ -657,6 +664,10 @@ body.pages-open:not(.views-open):not(.narrow-mode) #lcl-float-group{bottom:100px
    fold it reads as shading cast by the crease. Nothing that stays still is
    shaded during a turn. */
 #fb-static{box-shadow:0 2px 8px rgba(0,0,0,.35)}
+/* .fb-turning is now ONE class for both paths. It existed alongside
+   .fb-dragging only because the keyframe had to be suppressed for the gesture;
+   with the keyframe gone there is nothing left to distinguish them, so the
+   class does the single job it always meant: suppress this shadow. */
 #flipbook.fb-turning #fb-static{box-shadow:none}
 /* Spread mode only. #fb-static carries the INCOMING page for the whole turn,
    so the half that is NOT turning would otherwise jump to the new page at t=0.
@@ -692,10 +703,15 @@ body.pages-open:not(.views-open):not(.narrow-mode) #lcl-float-group{bottom:100px
    easing are copied from #fb-leaf's transform so the tint tracks the page
    rather than drifting against it — both halves of the 0 -> 1 -> 0 ramp get
    the same easing the angle does. */
-@keyframes fb-lift{0%{opacity:0}50%{opacity:1}100%{opacity:0}}
+/* THE KEYFRAME IS GONE (v112d). The comment above used to say its timing and
+   easing were "copied from #fb-leaf's transform so the tint tracks the page" —
+   which is an admission that this was a SECOND implementation of the same
+   animation, kept in step with the first by hand. It drifted, visibly, at
+   every handoff between a button turn and a gesture. Both the angle and the
+   tint are now written from one rAF loop; peak alpha .12 below is still the
+   dial, and sin(progress) reproduces the old 0 -> 1 -> 0 ramp exactly. */
 .fb-shade{position:absolute;top:0;right:0;bottom:0;left:0;border-radius:3px;
   pointer-events:none;opacity:0;background:rgba(0,0,0,.12)}
-#flipbook.fb-turning .fb-shade{animation:fb-lift .62s cubic-bezier(.42,0,.18,1)}
 
 /* Half-page faces are sized in PIXELS by _fbHalfBg(), never with a percentage
    background-size — a percentage resolves against the half-width face, not
@@ -704,9 +720,14 @@ body.pages-open:not(.views-open):not(.narrow-mode) #lcl-float-group{bottom:100px
 /* The leaf turns about its LEFT edge, like a real page, rather than about its
    own centre (which reads as a card flip). It therefore sweeps outside the
    page box to the left during the turn — #fb-stage must not clip. */
+/* NO CSS TRANSITION either — same reason as the keyframe. One rAF loop drives
+   the angle in both paths, so the button turn and the gesture cannot diverge.
+   transform-origin's Y is 28%, not center: a rotateY is unaffected by where
+   the axis sits vertically, but the perspective() in the transform projects
+   from the transform-origin, so 28% is what reproduces the old
+   perspective-origin:50% 28% downward bias. */
 #fb-leaf{position:absolute;top:0;right:0;bottom:0;left:0;display:none;pointer-events:none;
-  transform-style:preserve-3d;transform-origin:left center;will-change:transform;
-  transition:transform .62s cubic-bezier(.42,0,.18,1)}
+  transform-style:preserve-3d;transform-origin:left 28%;will-change:transform}
 #fb-leaf.on{display:block}
 /* NO SHADOW ON THE LEAF. It used to carry 0 8px 30px rgba(0,0,0,.55), which is
    invisible only while the page is edge-on: at t=0 and t=1 the leaf lies dead
@@ -6552,6 +6573,47 @@ function panUnproject(sx,sy){
 }
 function resetGesture(){cam.active=false;cam.panActive=false;lastPD=null;threeFingerPan=false;tf3Anchor=null;_twoFingerLock='none';_touchDragMode=null;_dragSelectMode=null;_selDragArmed=false;}
 
+// ── Zoom anchoring & rate (session 107) ──────────────────────────────
+// ZOOM_ANCHOR is the fraction of the EXACT cursor/pinch anchor correction that
+// gets applied after a zoom step. For an orbit camera the exact value is 1.0:
+// a world point at lateral offset v from the target (on the plane through the
+// target, perpendicular to the view axis) has screen offset proportional to
+// v/R, so holding it still while R -> R' requires moving the target by
+// v*(1 - R'/R) — which is exactly `zoomFrac`. Sessions before 107 multiplied
+// that by 0.35, so zoom only ever travelled 35% of the way toward the cursor
+// and the anchor point visibly drifted toward screen centre. See Gotcha #107.
+var ZOOM_ANCHOR=1.0;        // pinch (touch)
+var ZOOM_ANCHOR_WHEEL=1.0;  // wheel (desktop) — separate so it can be dialled back independently
+// Zoom is MULTIPLICATIVE, matching the nav zoom-jog's ZOOM_STEP convention.
+// Additive steps (radius + px*0.04) mean one pinch-pixel is a huge fraction of
+// the radius up close and almost nothing far out; a ratio is scale-invariant.
+var PINCH_GAIN=1.0;         // radius *= (prevDist/curDist)^PINCH_GAIN — 1.0 = fingers move the world 1:1
+var WHEEL_K=0.0018;         // radius    *= exp(deltaY*WHEEL_K)      — matches old feel at radius 10
+var WHEEL_K_ORTHO=0.0027;   // orthoZoom *= exp(deltaY*WHEEL_K_ORTHO) — matches old feel at orthoZoom 8
+
+// Single owner for every anchored zoom (both pinch paths + wheel).
+// `ratio` multiplies cam.radius / orthoZoom: >1 zooms out, <1 zooms in.
+// sx/sy are canvas-relative CSS pixels (already minus _cachedRect.left/top).
+function _zoomAnchored(ratio,sx,sy,anchorAmt){
+  if(!(ratio>0)||ratio===1)return;
+  if(anchorAmt===undefined)anchorAmt=ZOOM_ANCHOR;
+  var wB=panUnproject(sx,sy).clone();
+  if(useOrtho){
+    orthoZoom=Math.max(1,Math.min(50,orthoZoom*ratio));
+    syncOrtho();updCam();
+    // Ortho is exact: re-unproject the same screen point and shift by the delta.
+    var wA=panUnproject(sx,sy);
+    cam.target.add(_puTmp.subVectors(wB,wA).multiplyScalar(anchorAmt));
+  } else {
+    var oldR=cam.radius;
+    cam.radius=Math.max(1,Math.min(40,cam.radius*ratio));
+    // At a clamp this goes to 0 on its own, so no correction is applied — correct.
+    var zf=1-(cam.radius/Math.max(0.001,oldR));
+    cam.target.addScaledVector(_puTmp.subVectors(wB,cam.target),zf*anchorAmt);
+  }
+  updCam();
+}
+
 // ── Multi-finger tap detection (session 100) ─────────────────────────
 // Layered ON TOP of the existing 2F/3F branches in onDown/onMove/onUp — it
 // reads their state and never steers them, so navigation behaviour is byte-for-
@@ -6799,13 +6861,8 @@ function onMove(e){
           }
         }
         if(_twoFingerLock==='zoom'||_twoFingerLock==='none'){
-          if(lastPD!==null){
-            const delta=lastPD-d;
-            var midXs=cx-_cachedRect.left,midYs=cy-_cachedRect.top;
-            var wBs=panUnproject(midXs,midYs).clone();
-            if(useOrtho){orthoZoom=Math.max(1,Math.min(50,orthoZoom+delta*.04));syncOrtho();updCam();var wAs=panUnproject(midXs,midYs);cam.target.add(_puTmp.subVectors(wBs,wAs));}
-            else{var oldRs=cam.radius;cam.radius=Math.max(1,Math.min(40,cam.radius+delta*.04));var zFs=1-(cam.radius/Math.max(0.001,oldRs));cam.target.addScaledVector(_puTmp.subVectors(wBs,cam.target),zFs*0.35);}
-            updCam();
+          if(lastPD!==null&&lastPD>0&&d>0){
+            _zoomAnchored(Math.pow(lastPD/d,PINCH_GAIN),cx-_cachedRect.left,cy-_cachedRect.top);
           }
         }
         if(_twoFingerLock==='navigate'){
@@ -6828,22 +6885,8 @@ function onMove(e){
       }
       if(_twoFingerLock==='zoom'||_twoFingerLock==='none'){
         // Only apply zoom
-        if(lastPD!==null){
-          const delta=lastPD-d;
-          var midX=cx-_cachedRect.left, midY=cy-_cachedRect.top;
-          var worldBefore2=panUnproject(midX,midY).clone();
-          if(useOrtho){
-            orthoZoom=Math.max(1,Math.min(50,orthoZoom+delta*.04));
-            syncOrtho();updCam();
-            var worldAfter2=panUnproject(midX,midY);
-            cam.target.add(_puTmp.subVectors(worldBefore2,worldAfter2));
-          } else {
-            var oldR2=cam.radius;
-            cam.radius=Math.max(1,Math.min(40,cam.radius+delta*.04));
-            var zoomFrac2=1-(cam.radius/Math.max(0.001,oldR2));
-            cam.target.addScaledVector(_puTmp.subVectors(worldBefore2,cam.target),zoomFrac2*0.35);
-          }
-          updCam();
+        if(lastPD!==null&&lastPD>0&&d>0){
+          _zoomAnchored(Math.pow(lastPD/d,PINCH_GAIN),cx-_cachedRect.left,cy-_cachedRect.top);
         }
       }
       if(_twoFingerLock==='navigate'){
@@ -7170,22 +7213,9 @@ renderer.domElement.addEventListener('wheel',e=>{
   if(e.ctrlKey) return;
   if(_fpsMode){cam.target.z-=e.deltaY*0.003;updCam();return;}
   var mx=e.clientX, my=e.clientY;
-  // World point under cursor before zoom (used to re-anchor target)
-  var worldBefore=panUnproject(mx-_cachedRect.left, my-_cachedRect.top).clone();
-  if(useOrtho){
-    orthoZoom=Math.max(1,Math.min(50,orthoZoom+e.deltaY*.025));
-    syncOrtho();updCam();
-    // Re-anchor: shift target so worldBefore stays under cursor
-    var worldAfter=panUnproject(mx-_cachedRect.left, my-_cachedRect.top);
-    cam.target.add(_puTmp.subVectors(worldBefore,worldAfter));
-  } else {
-    var oldR=cam.radius;
-    cam.radius=Math.max(1,Math.min(40,cam.radius+e.deltaY*.02));
-    // Re-anchor toward cursor: lerp target toward worldBefore by zoom fraction
-    var zoomFrac=1-(cam.radius/oldR);
-    cam.target.addScaledVector(_puTmp.subVectors(worldBefore,cam.target),zoomFrac*0.35);
-  }
-  updCam();
+  // Multiplicative + fully anchored (session 111) — see _zoomAnchored.
+  var wk=useOrtho?WHEEL_K_ORTHO:WHEEL_K;
+  _zoomAnchored(Math.exp(e.deltaY*wk),mx-_cachedRect.left,my-_cachedRect.top,ZOOM_ANCHOR_WHEEL);
 },{passive:false});
 
 // ── Stylus hover highlight for UI buttons ──
@@ -7263,6 +7293,12 @@ function _fbBgHex(){return scene.background?('#'+scene.background.getHexString()
 // JPEG has no alpha channel, so the destination is filled with the scene
 // background first — drawing straight onto a fresh canvas makes any
 // transparent region come out black.
+//
+// Returns the DIMENSIONS as well as the data URL, and that is not a
+// convenience: _fbHalfBg() reproduces `cover` arithmetically and needs the
+// image's real aspect. Deriving it from renderer.domElement at display time
+// is wrong, because the canvas may have been resized since this snapshot was
+// taken. See gotchas.md Critical Rule #112(e).
 function _fbScaleCanvas(src,maxEdge,q){
   var w=src.width||1,h=src.height||1;
   var s=Math.min(1,maxEdge/Math.max(w,h));
@@ -7272,7 +7308,7 @@ function _fbScaleCanvas(src,maxEdge,q){
   var x=c.getContext('2d');
   x.fillStyle=_fbBgHex();x.fillRect(0,0,c.width,c.height);
   x.drawImage(src,0,0,c.width,c.height);
-  return c.toDataURL('image/jpeg',q);
+  return {url:c.toDataURL('image/jpeg',q),w:c.width,h:c.height};
 }
 
 // Real WebGL snapshot of the live page. preserveDrawingBuffer is true on the
@@ -7290,8 +7326,11 @@ function _pgSnap(){
   try{
     renderer.render(scene,activeCam());
     var src=renderer.domElement;
-    out={preview:_fbScaleCanvas(src,FB_PREVIEW_MAX,.6),
-         thumb:_fbScaleCanvas(src,FB_THUMB_MAX,.5)};
+    var p=_fbScaleCanvas(src,FB_PREVIEW_MAX,.6);
+    var th=_fbScaleCanvas(src,FB_THUMB_MAX,.5);
+    // pw/ph travel with the page object (so splice/reorder carry them for
+    // free) and are runtime-only — they are never written to the save file.
+    out={preview:p.url,pw:p.w,ph:p.h,thumb:th.url};
   }finally{
     gridH.visible=_sg;axisGroup.visible=_sa;surfGroup.visible=_ss;_symGuideGroup.visible=_sy;
     markDirty();
@@ -7361,7 +7400,8 @@ function _fbEnsureShots(i){
   var W=FB_PREVIEW_MAX, H=Math.max(1,Math.round(W*ar));
   var c=_fbProxyCanvas(pg.strokes||[],W,H);
   pg.preview=c.toDataURL('image/jpeg',.6);
-  pg.thumb=_fbScaleCanvas(c,FB_THUMB_MAX,.5);
+  pg.pw=c.width;pg.ph=c.height;
+  pg.thumb=_fbScaleCanvas(c,FB_THUMB_MAX,.5).url;
   pg.proxy=true;
 }
 
@@ -7370,7 +7410,7 @@ function saveCurPage(){
   var existingViews=pages[curPage]&&pages[curPage].views||[];
   var existingName=pages[curPage]&&pages[curPage].name;
   var shot=_pgSnap();
-  pages[curPage]={strokes:strokes.map(s=>({pts:s.pts.map(p=>({x:p.x,y:p.y,z:p.z})),color:s.color,sz:s.sz,op:s.op,flat:s.flat,layer:s.layer!=null?s.layer:1,mx:s.mesh.matrix.elements.slice()})),thumb:shot.thumb,preview:shot.preview,proxy:false,views:existingViews,primitives:window._savePrimitivesForPage?window._savePrimitivesForPage():[],name:existingName};
+  pages[curPage]={strokes:strokes.map(s=>({pts:s.pts.map(p=>({x:p.x,y:p.y,z:p.z})),color:s.color,sz:s.sz,op:s.op,flat:s.flat,layer:s.layer!=null?s.layer:1,mx:s.mesh.matrix.elements.slice()})),thumb:shot.thumb,preview:shot.preview,pw:shot.pw,ph:shot.ph,proxy:false,views:existingViews,primitives:window._savePrimitivesForPage?window._savePrimitivesForPage():[],name:existingName};
   refreshPageStrip();
 }
 function loadPage(idx){saveCurPage();clearAll();if(window._clearAllPrimitives)window._clearAllPrimitives();curPage=idx;const pg=pages[idx];if(pg&&pg.strokes)loadData({strokes:pg.strokes,primitives:pg.primitives});refreshPageStrip();refreshViewStrip();markDirty();}
@@ -7451,6 +7491,47 @@ var _fbAnim=false;      // a leaf turn is in flight
 var _fbPending=-1;      // latest requested target while animating (coalesces scrub drags)
 var _fbAnimTimer=null;
 
+// ── Finger-tracked turn (session 112) ─────────────────────────────
+// The leaf follows the finger and the commit/abandon decision is made at
+// POINTERUP, not at pointerdown. That is the whole trick: a fast flick and a
+// slow deliberate drag are the same gesture with two different release rules,
+// so the quick swipe survives unchanged while the page also becomes something
+// you can hold half-open and look back and forth through.
+//
+// ONE PAGE PER GESTURE, by design. Tracking past 180deg would mean rebuilding
+// the leaf geometry and re-running _fbHalfBg() on both faces mid-gesture —
+// the only non-compositor work in the whole drag, landing on the frame where
+// the finger is moving fastest. The scrub bar is the many-pages tool.
+var FB_TURN_MS=620;        // matches #fb-leaf's CSS transition
+var FB_DRAG_LOCK_PX=10;    // travel before a drag locks a direction. MUST stay
+                           // above TAP_PX (8) or a wobble both starts a turn
+                           // and still counts as a tap-to-exit.
+var FB_DRAG_HYST_PX=4;     // dead zone around 0 — see _fbDragTrack()
+var FB_DRAG_TRAVEL=0.6;    // fraction of the swing's own width = a full 180deg
+var FB_FLICK_VEL=0.5;      // px/ms at release that commits at any angle
+var FB_FLICK_PX=40;        // ...but only past this much travel (the old
+                           // SWIPE_PX, demoted from a rule to a flick floor)
+var FB_SETTLE_MIN_MS=180;  // a commit from 20deg still needs to be watchable
+var _fbDrag=false;      // a finger-tracked turn is in progress
+var _fbDragDir=0;       // 0 = no direction locked (leaf flat or torn down)
+var _fbDragNo=0;        // a direction already refused this gesture (edge page)
+// Start/end transform angles for the turn the leaf is currently set up for.
+// Written by _fbSetupLeaf() because only it knows the mode and direction; both
+// the CSS-transition path and the drag read them rather than re-deriving.
+var _fbA0=0,_fbA1=-180;
+// Page #fb-static must swap to as the leaf lands, or -1 if it already holds
+// the right one. Only a backward SINGLE turn needs this: the leaf arrives from
+// the left stack, so the box has to keep showing the outgoing page until the
+// leaf is flat over it. Consumed by _fbLanded().
+var _fbStaticAtEnd=-1;
+var _fbDragProg=0;      // 0..180, how far THROUGH the turn — not the raw angle.
+                        // A backward single turn runs -180 -> 0, so the raw
+                        // angle is not a measure of progress and cannot be
+                        // compared against 90.
+var _fbDragUnit=1;      // px of finger travel per 180deg, written by _fbSetupLeaf()
+var _fbSettleRaf=0;
+var _fbShadeEls=null;
+
 function _fbEl(id){return document.getElementById(id);}
 
 // The thumb fallback exists because a blank page beside a populated scrub
@@ -7462,9 +7543,14 @@ function _fbPreview(i){
   return pg.preview||pg.thumb||'';
 }
 function _fbSetStatic(i){
-  var st=_fbEl('fb-static'),u=_fbPreview(i);
+  var st=_fbEl('fb-static');
   if(!st)return;
-  st.style.backgroundImage=u?('url('+u+')'):'none';
+  // Same arithmetic as the leaf faces — see _fbHalfBg()'s invariant 2. The
+  // measure is needed because this is called from paths that never ran
+  // _fbApplyShape() (deletePage, movePage, a settle landing).
+  if(!_fbBoxW||!_fbBoxH)_fbMeasure();
+  var d=_fbPreviewDims(i);
+  _fbHalfBg(st,_fbPreview(i),null,d[0],d[1]);
 }
 
 function _fbSyncMeta(){
@@ -7535,22 +7621,48 @@ function _fbRefresh(){
 var _fbBoxW=0,_fbBoxH=0,_fbImgW=0,_fbImgH=0;
 
 // Reproduces background-size:cover against the FULL page box, then offsets so
-// that `half` ('left' | 'right') is what shows inside a half-width face. Both
-// the size and the offset are in pixels, because a percentage background-size
-// resolves against the FACE — which is half as wide as the box the image
-// should be covering. That mismatch is what squashed the drawing mid-turn.
-// half === null means the element spans the whole box (single-page mode).
-function _fbHalfBg(el,url,half){
+// that `half` ('left' | 'right' | null for the whole box) is what shows inside
+// the element. Size and offset are in pixels, because a percentage
+// background-size resolves against the FACE — half as wide as the box the
+// image should be covering. That mismatch is what squashed the drawing.
+//
+// TWO INVARIANTS, and the second one is the load-bearing one:
+//
+// 1. iw/ih must be the image's REAL dimensions, recorded when the snapshot was
+//    taken (pages[i].pw/ph). Deriving them from renderer.domElement at display
+//    time assumes the canvas hasn't been resized since — and it has, on every
+//    rotation and on every Android URL-bar show/hide. See Rule #112(e).
+// 2. EVERY element showing a page image goes through this function, including
+//    #fb-static, which used to sit on CSS `cover` instead. What actually
+//    matters visually is not that any one of them is right, it is that all
+//    three AGREE; a static using true cover beside faces using arithmetic can
+//    disagree, and does. One path, one set of numbers, agreement by
+//    construction.
+function _fbHalfBg(el,url,half,iw,ih){
   el.style.backgroundImage=url?('url('+url+')'):'none';
-  if(half===null||!_fbBoxW||!_fbBoxH||!_fbImgW||!_fbImgH){
+  if(!url)return;
+  iw=iw||_fbImgW;ih=ih||_fbImgH;
+  if(!_fbBoxW||!_fbBoxH||!iw||!ih){
     el.style.backgroundSize='cover';el.style.backgroundPosition='center';return;
   }
-  var sc=Math.max(_fbBoxW/_fbImgW,_fbBoxH/_fbImgH);
-  var dw=_fbImgW*sc, dh=_fbImgH*sc;
+  var sc=Math.max(_fbBoxW/iw,_fbBoxH/ih);
+  var dw=iw*sc, dh=ih*sc;
   var x0=(_fbBoxW-dw)/2, y0=(_fbBoxH-dh)/2;   // where cover would put it
   if(half==='right')x0-=_fbBoxW/2;            // the face's origin is the gutter
-  el.style.backgroundSize=Math.round(dw)+'px '+Math.round(dh)+'px';
-  el.style.backgroundPosition=Math.round(x0)+'px '+Math.round(y0)+'px';
+  // Sub-pixel, NOT rounded. Rounding each element independently can put a 1px
+  // seam at the gutter between the leaf and #fb-under.
+  el.style.backgroundSize=dw.toFixed(2)+'px '+dh.toFixed(2)+'px';
+  el.style.backgroundPosition=x0.toFixed(2)+'px '+y0.toFixed(2)+'px';
+}
+
+// The dimensions recorded with a page's snapshot. Falls back to the live
+// canvas only for a page that somehow has an image but no dims — which no
+// current write path produces, but the fallback keeps it merely imprecise
+// rather than blank.
+function _fbPreviewDims(i){
+  var pg=pages[i];
+  if(pg&&pg.pw&&pg.ph)return[pg.pw,pg.ph];
+  return[_fbImgW,_fbImgH];
 }
 
 // Reads the live page box and snapshot dimensions into the four module vars
@@ -7564,6 +7676,42 @@ function _fbMeasure(){
   }
   var rc=renderer.domElement;
   _fbImgW=rc.width||4;_fbImgH=rc.height||3;
+  _fbSetPersp();
+}
+
+// PERSPECTIVE HAS TO SCALE WITH THE SWING, because the depth cue is a ratio
+// and a fixed px value only produces the tuned ratio at one box size.
+//
+// The free edge of the leaf reaches a depth of w*sin(t) where w is the swing
+// width — hinge to free edge — so its scale is p/(p - w*sin(t)). That is a
+// function of p/w, not of p. The CSS note above tuned p=880 against a 689x492
+// SPREAD box, i.e. w=344.5, and records the result as 1.38x at 45deg; the
+// formula reproduces 1.383 for those numbers, which is what confirms this is
+// the right model. Every other box then drifts off it:
+//
+//   phone tall,   w=250 -> 1.25x   (below the 1.30 row the note calls weaker,
+//                                   near the 1.21 it rejected as a squash)
+//   tall,         w=400 -> 1.47x
+//   tablet spread,w=450 -> 1.57x
+//   big spread,   w=550 -> 1.79x
+//
+// So "sometimes the page doesn't pop out" is not intermittent at all — it is
+// box size, which is why it shows on a phone in tall mode and not on a
+// tablet. Solving p/(p - w*sin45) = 1.38 gives p = w * 2.568, which returns
+// 885px for the original tuning box (the 880 that was there) and holds the
+// same 1.38 everywhere else.
+//
+// NOTE the swing width is the LEAF's width, not the box's: in spread the leaf
+// is half the box and hinges at the gutter. Same quantity _fbDragUnit is
+// built from, for the same reason.
+var FB_PERSP_K=2.568;
+var _fbPersp=880;   // px, written by _fbSetPersp(); used INSIDE the leaf's transform
+function _fbSetPersp(){
+  var fb=_fbEl('flipbook');
+  if(!_fbBoxW)return;
+  var spread=!!(fb&&fb.classList.contains('fb-spread'));
+  var w=spread?_fbBoxW*0.5:_fbBoxW;
+  _fbPersp=Math.max(200,Math.round(w*FB_PERSP_K));
 }
 
 // Page box geometry. Written inline rather than via CSS aspect-ratio — the
@@ -7589,6 +7737,10 @@ function _fbApplyShape(){
   page.style.width=Math.round(w)+'px';
   page.style.height=Math.round(h)+'px';
   _fbMeasure();
+  // The box just changed, and #fb-static's background is now sized in pixels
+  // against the OLD one. Re-apply it or a rotation with the overlay open
+  // leaves the resting page mis-scaled until the next turn.
+  if(_fbOpen)_fbSetStatic(_fbIdx);
 }
 
 // ── The turn ──────────────────────────────────────────────────────
@@ -7615,18 +7767,18 @@ function _fbApplyShape(){
 // half that is not turning would therefore show the new page from t=0, so
 // #fb-under carries the outgoing page's other half on top of it until the leaf
 // lands. See the #fb-under CSS comment.
-function _fbGo(t){
-  if(!_fbOpen)return;
-  t=Math.max(0,Math.min(pages.length-1,t));
-  if(_fbAnim){if(t!==_fbIdx)_fbPending=t;return;}
-  if(t===_fbIdx)return;
-  var from=_fbIdx,dir=(t>from)?1:-1;
-  _fbIdx=t;
+// Leaf geometry and face images for a turn from `from` to `t`. Split out of
+// _fbGo() in session 112 so the finger-tracked drag builds a leaf that is
+// identical in every respect — there must not be two copies of the
+// pivot/half/#fb-under logic, because a fix applied to one and not the other
+// is exactly the asymmetry gotchas.md keeps warning about.
+// Leaves the leaf at whatever transform it already had; the caller drives it.
+function _fbSetupLeaf(from,t,dir){
   var fb=_fbEl('flipbook');
   var leaf=_fbEl('fb-leaf'),fF=_fbEl('fb-leaf-front'),bF=_fbEl('fb-leaf-back'),un=_fbEl('fb-under');
-  if(!leaf||!fF||!bF){_fbSetStatic(t);_fbSyncMeta();return;}
-  var pFrom=_fbPreview(from);
-  var pTo=_fbPreview(t);
+  if(!leaf||!fF||!bF)return false;
+  var pFrom=_fbPreview(from),dFrom=_fbPreviewDims(from);
+  var pTo=_fbPreview(t),dTo=_fbPreviewDims(t);
   var spread=!!(fb&&fb.classList.contains('fb-spread'));
   // Re-measure the page box on EVERY turn rather than trusting the value
   // _fbApplyShape() cached at open/resize time. #fb-stage's height moves with
@@ -7647,9 +7799,51 @@ function _fbGo(t){
   // begins parked off to the side and swings in, so at t=0 the box already
   // shows the destination page. Forward and backward looked like two different
   // animations. Do not "simplify" back to it.
-  var a0='rotateY(0deg)',a1,turning,resting;
+  var turning,resting;
   var pivot=(dir>0)?'left':'right';       // edge the leaf hinges on
 
+  if(!spread){
+    // ── SINGLE (tall/narrow): A REAL NOTEBOOK, SPINE ALWAYS ON THE LEFT ──
+    // Session 112b. The mirrored pivot above is right for a spread, which
+    // opens about its gutter, and wrong for a single sheet: a loose page
+    // hinged on the right going backward is not a notebook, it is a flip
+    // chart. So the hinge is the LEFT edge in both directions, and the two
+    // turns stop being mirror images of each other — which is what a left
+    // spine actually does:
+    //
+    //   forward   leaf lies flat on the pile, lifts, swings LEFT   0 -> -180
+    //   backward  leaf lies on the left stack, swings RIGHT onto it  -180 -> 0
+    //
+    // Session 108 rejected a backward turn starting at -180deg, and that
+    // rejection was correct FOR THE DESIGN IT WAS MADE IN: the objection was
+    // that the box already showed the destination page at t=0. It doesn't
+    // here, because a backward single turn now leaves #fb-static on the
+    // OUTGOING page and swaps it at landing, under the flat leaf. The
+    // objection was about what #fb-static held, not about the start angle.
+    //
+    // ONE DRAWING PER FACE, AND THE FACE YOU SEE MID-TURN IS BLANK. A sheet in
+    // this app carries one drawing on its front and nothing on its back, so
+    // the reverse is the page background. There is no resting half to line up
+    // with, which is the only reason the spread has to carry image halves at
+    // all. Whichever face is flat against the box at the still end of the turn
+    // is the one with the drawing; the other is blank, and it is the one
+    // facing you for the whole middle of the flip.
+    leaf.style.width='100%';leaf.style.left='0';
+    leaf.style.transformOrigin='left center';
+    if(un)un.classList.remove('on');
+    _fbA0=(dir>0)?0:-180;
+    _fbA1=(dir>0)?-180:0;
+    // #fb-static holds the page that is NOT on the leaf's drawn face.
+    _fbStaticAtEnd=(dir>0)?-1:t;   // -1 = already correct, no swap needed
+    var pFace=(dir>0)?pFrom:pTo, dFace=(dir>0)?dFrom:dTo;
+    _fbHalfBg(fF,pFace,null,dFace[0],dFace[1]);
+    _fbHalfBg(bF,'',null,0,0);
+    bF.style.backgroundColor=_fbBgHex();
+    _fbSetStatic((dir>0)?t:from);
+    leaf.classList.add('on');
+    _fbDragUnit=Math.max(90,_fbBoxW*FB_DRAG_TRAVEL);
+    return true;
+  }
   if(!spread){
     leaf.style.width='100%';leaf.style.left='0';
     leaf.style.transformOrigin=pivot+' center';
@@ -7666,43 +7860,63 @@ function _fbGo(t){
       un.classList.add('on');
       un.style.width='50%';
       un.style.left=(dir>0)?'0':'50%';
-      _fbHalfBg(un,pFrom,resting);
+      _fbHalfBg(un,pFrom,resting,dFrom[0],dFrom[1]);
     }
   }
-  a1=(dir>0)?'rotateY(-180deg)':'rotateY(180deg)';
   // The face showing at the start carries the TURNING half of the outgoing
   // page. The face showing at the end has swung across the pivot and landed on
   // the opposite side, so it carries the RESTING half of the incoming page.
   // (turning/resting are null in single mode — the leaf is the whole page.)
-  _fbHalfBg(fF,pFrom,turning);
-  _fbHalfBg(bF,pTo,resting);
+  _fbHalfBg(fF,pFrom,turning,dFrom[0],dFrom[1]);
+  _fbHalfBg(bF,pTo,resting,dTo[0],dTo[1]);
+  bF.style.backgroundColor='';
+  // A spread opens about its gutter, so the two directions ARE mirror images
+  // and both start flat at 0. Unchanged from session 108.
+  _fbA0=0;
+  _fbA1=(dir>0)?-180:180;
+  _fbStaticAtEnd=-1;
 
   _fbSetStatic(t);
+  leaf.classList.add('on');
+  // Travel-to-angle scale for the drag path. The swing covers the whole box in
+  // single mode and half of it about the gutter in spread, so the unit follows
+  // the SWING, not the box — otherwise a spread turn feels half as sensitive
+  // as a single one for the same finger movement. Floored so a small box on a
+  // phone doesn't become hair-trigger. Unused by _fbGo(); written here because
+  // this is the one place that knows the mode and has just measured.
+  _fbDragUnit=Math.max(90,(spread?_fbBoxW*0.5:_fbBoxW)*FB_DRAG_TRAVEL);
+  return true;
+}
+
+function _fbGo(t){
+  if(!_fbOpen)return;
+  t=Math.max(0,Math.min(pages.length-1,t));
+  if(_fbAnim){if(t!==_fbIdx)_fbPending=t;return;}
+  if(t===_fbIdx)return;
+  var from=_fbIdx,dir=(t>from)?1:-1;
+  _fbIdx=t;
+  var fb=_fbEl('flipbook'),leaf=_fbEl('fb-leaf');
+  if(!leaf||!_fbSetupLeaf(from,t,dir)){_fbSetStatic(t);_fbSyncMeta();return;}
   _fbSyncMeta();
   _fbAnim=true;
-  leaf.classList.add('on');
-  if(fb)fb.classList.remove('fb-turning');
-  leaf.style.transition='none';
-  leaf.style.transform=a0;
-  // Force a reflow so the start transform is committed as its own style pass;
-  // without this the browser coalesces both writes and nothing animates.
-  // It also restarts the shade keyframes — removing .fb-turning, reflowing,
-  // then re-adding it is the standard way to replay a CSS animation, and it
-  // happens to be exactly the reflow the transform already needs.
-  void leaf.offsetWidth;
-  leaf.style.transition='';
-  leaf.style.transform=a1;
-  if(fb)fb.classList.add('fb-turning');
-  if(_fbAnimTimer)clearTimeout(_fbAnimTimer);
-  // Safety net: transitionend does not fire if the element is display:none'd
-  // mid-flight (e.g. the overlay is closed during a turn).
-  _fbAnimTimer=setTimeout(_fbLanded,820);
+  if(fb)fb.classList.add('fb-turning');   // suppresses #fb-static's shadow only
+  // No reflow dance and no transitionend safety net any more: both existed to
+  // make a CSS transition start and stop reliably. _fbRun() starts on the next
+  // frame by construction and ends by running out of frames.
+  _fbApplyProg(0);
+  _fbRun(0,180,FB_TURN_MS,true,true,t);
 }
 
 function _fbLanded(){
   if(_fbAnimTimer){clearTimeout(_fbAnimTimer);_fbAnimTimer=null;}
   if(!_fbAnim)return;
   _fbAnim=false;
+  // Single-mode backward turns leave #fb-static on the OUTGOING page for the
+  // whole flight — the leaf arrives from the left stack, so the box has to
+  // keep showing where you were until the sheet is flat over it. This is the
+  // moment it is flat and covering, so the swap is invisible. Every other
+  // turn set static at t=0 and _fbStaticAtEnd is -1.
+  if(_fbStaticAtEnd>=0){_fbSetStatic(_fbIdx);_fbStaticAtEnd=-1;}
   var leaf=_fbEl('fb-leaf');
   if(leaf)leaf.classList.remove('on');
   var fb=_fbEl('flipbook');
@@ -7712,12 +7926,215 @@ function _fbLanded(){
   if(_fbPending>=0){var p=_fbPending;_fbPending=-1;_fbGo(p);}
 }
 
+// ── Drag: the leaf follows the finger ─────────────────────────────
+// Nodes are cached because _fbShade() runs once per pointermove and once per
+// settle frame; a querySelectorAll per frame is the kind of thing that only
+// shows up on the old WebViews this app targets.
+function _fbShadeNodes(){
+  // Never latch an EMPTY result: the first call can land before the overlay's
+  // markup is reachable, and caching [] then would silently kill the shade for
+  // the rest of the session.
+  if(!_fbShadeEls||!_fbShadeEls.length){
+    var lf=_fbEl('fb-leaf');
+    _fbShadeEls=lf?lf.querySelectorAll('.fb-shade'):[];
+  }
+  return _fbShadeEls;
+}
+// prog is 0..180, progress through the turn. The tint's strength lives in
+// .fb-shade's own rgba alpha, so peak opacity is 1 and sin() reproduces the
+// old fb-lift ramp exactly — same peak, same shape, driven by the very value
+// that drives the angle, so it cannot drift against the page.
+function _fbShade(mag){
+  var els=_fbShadeNodes(),o=String(Math.sin(mag*Math.PI/180));
+  for(var i=0;i<els.length;i++)els[i].style.opacity=o;
+}
+function _fbShadeClear(){
+  var els=_fbShadeNodes();
+  for(var i=0;i<els.length;i++)els[i].style.opacity='';
+}
+
+// Tears the leaf back down to "nothing is turning" without touching _fbIdx.
+// Used when a drag heads toward a page that doesn't exist.
+function _fbDragDropLeaf(){
+  var leaf=_fbEl('fb-leaf'),un=_fbEl('fb-under');
+  if(leaf){leaf.style.transform='';leaf.classList.remove('on');}
+  if(un)un.classList.remove('on');
+  _fbShadeClear();
+  _fbStaticAtEnd=-1;
+  _fbSetStatic(_fbIdx);
+  _fbDragDir=0;
+}
+
+// dx is total travel from pointerdown, in px.
+function _fbDragTrack(dx){
+  var leaf=_fbEl('fb-leaf');
+  if(!leaf)return;
+  // FB_DRAG_HYST_PX is not a threshold, it's a hinge. Inside it the leaf lies
+  // dead flat over #fb-static, which is the one moment when swapping the
+  // geometry to the other direction is completely invisible — so reversing
+  // through zero rebuilds there and nowhere else. It also stops a finger
+  // hovering on the origin from rebuilding the leaf on every single frame.
+  var want=(Math.abs(dx)<=FB_DRAG_HYST_PX)?0:(dx<0?1:-1);
+  if(want!==_fbDragNo)_fbDragNo=0;
+  if(want!==0&&want!==_fbDragDir&&want!==_fbDragNo){
+    var tgt=_fbIdx+want;
+    if(tgt<0||tgt>=pages.length||!_fbSetupLeaf(_fbIdx,tgt,want)){
+      // No page that way. Hold flat rather than turn to nowhere — this is the
+      // mid-drag equivalent of #fb-prev/#fb-next being disabled. _fbDragNo
+      // remembers the refusal: without it, dragging backward on page 0 tears
+      // the leaf down (and reads a rect) on EVERY pointermove.
+      _fbDragNo=want;
+      _fbDragDropLeaf();
+      _fbDragProg=0;
+      return;
+    }
+    _fbDragDir=want;
+  }
+  if(want!==0&&want===_fbDragNo){_fbDragProg=0;_fbApplyProg(0);return;}
+  if(!_fbDragDir){_fbDragProg=0;return;}
+  _fbDragProg=Math.min(180,Math.abs(dx)/_fbDragUnit*180);
+  _fbApplyProg(_fbDragProg);
+}
+
+// prog 0..180 -> the leaf's transform, plus the shade that tracks it. The
+// endpoints come from _fbSetupLeaf(), so this is the only place that needs to
+// know a backward single turn runs -180 -> 0 rather than 0 -> +180.
+function _fbAngAt(prog){return _fbA0+(_fbA1-_fbA0)*(prog/180);}
+// THE ONLY PLACE THE LEAF'S TRANSFORM OR THE SHADE'S OPACITY IS WRITTEN.
+// Both the button turn and the gesture drive this, one frame at a time, so
+// there is no second implementation for them to drift apart from.
+function _fbApplyProg(prog){
+  var leaf=_fbEl('fb-leaf');
+  if(!leaf)return;
+  // perspective() lives in the transform, not on #fb-page — see the CSS note.
+  leaf.style.transform='perspective('+_fbPersp+'px) rotateY('+_fbAngAt(prog).toFixed(2)+'deg)';
+  // sin(PROGRESS), not sin(angle) — the shade is deepest when the page is
+  // edge-on, which is halfway through the turn in every mode and direction.
+  _fbShade(prog);
+}
+
+// cubic-bezier(.42,0,.18,1), the house easing, solved numerically. Newton on
+// x(u)=t; six iterations is well inside a pixel for this curve.
+function _fbBez(t){
+  var x1=.42,x2=.18,u=t,i,mu,x,d;
+  for(i=0;i<6;i++){
+    mu=1-u;
+    x=3*mu*mu*u*x1+3*mu*u*u*x2+u*u*u;
+    d=3*mu*mu*x1+6*mu*u*(x2-x1)+3*u*u*(1-x2);
+    if(d<1e-6)break;
+    u-=(x-t)/d;
+    if(u<0)u=0;else if(u>1)u=1;
+  }
+  mu=1-u;
+  return 3*mu*u*u+u*u*u;   // y1=0, y2=1
+}
+
+// Common teardown. Restores the leaf to a clean inline state — the transform
+// must be cleared while the transition is still 'none', with a reflow before
+// the transition is handed back to CSS, or clearing it animates the leaf
+// visibly back to flat.
+// Common teardown. Clearing the transform is now an ordinary write — with the
+// CSS transition gone there is nothing live on the property to animate it
+// back, which is what Rule #112(b) was about.
+function _fbDragReset(){
+  var leaf=_fbEl('fb-leaf');
+  if(leaf)leaf.style.transform='';
+  _fbShadeClear();
+  _fbDrag=false;_fbDragDir=0;_fbDragNo=0;_fbDragProg=0;
+}
+
+// Release settle, rAF-driven rather than a CSS transition, for two reasons:
+// the shade has to keep tracking the angle through it (a keyframe can't start
+// from an arbitrary angle), and transitionend is the single least reliable
+// event in this file — see gotchas #108(b).
+//
+// EASE-OUT, deliberately not the arrow turn's ease-in-out cubic-bezier. The
+// page is already moving at the moment the finger lets go, so easing IN would
+// read as the page stalling and then restarting.
+// THE ONE ANIMATION LOOP. Both the button/scrub turn and the gesture release
+// come through here; the only differences are the easing and the start point.
+//
+// rAF rather than a CSS transition, for three reasons: the shade has to track
+// the same progress value the angle does (a keyframe cannot start from an
+// arbitrary angle, which a released drag always does), transitionend is the
+// least reliable event in this file, and — the reason it is now the ONLY path
+// — two implementations of one animation drift apart at every handoff.
+//
+// io=true uses the house cubic-bezier for a deliberate turn; io=false uses
+// ease-out for a release, because the page is already moving when the finger
+// lets go and easing IN reads as a stall-and-restart.
+var _fbRunTok=0;
+function _fbRun(p0,p1,dur,io,commit,target){
+  var leaf=_fbEl('fb-leaf');
+  if(!leaf){_fbFinish(commit,target);return;}
+  if(_fbSettleRaf){cancelAnimationFrame(_fbSettleRaf);_fbSettleRaf=0;}
+  var tok=++_fbRunTok,t0=-1;
+  function step(ts){
+    // A newer run, or the overlay closing, retires this one. The token is
+    // what makes a turn started mid-flight safe.
+    if(tok!==_fbRunTok||!_fbOpen){return;}
+    if(t0<0)t0=ts;
+    var p=(dur>0)?Math.min(1,(ts-t0)/dur):1;
+    _fbApplyProg(p0+(p1-p0)*(io?_fbBez(p):(1-Math.pow(1-p,3))));
+    if(p<1){_fbSettleRaf=requestAnimationFrame(step);return;}
+    _fbSettleRaf=0;
+    _fbFinish(commit,target);
+  }
+  _fbSettleRaf=requestAnimationFrame(step);
+}
+
+function _fbFinish(commit,target){
+  if(commit){if(target>=0)_fbIdx=target;}
+  // Sprung back: the leaf returned to where it came from, so a pending static
+  // swap is now wrong — static already holds _fbIdx.
+  else _fbStaticAtEnd=-1;
+  // Either way #fb-static must end up holding _fbIdx. Safe here because the
+  // leaf (plus #fb-under in spread) covers the box until _fbLanded() hides it.
+  _fbSetStatic(_fbIdx);
+  _fbSyncMeta();
+  _fbDragReset();
+  _fbLanded();
+}
+
+// dx/vel are total travel and instantaneous velocity at pointerup.
+function _fbDragRelease(dx,vel){
+  if(!_fbDrag)return;
+  if(!_fbDragDir){
+    // Never locked a direction — an edge page, or the finger stayed inside
+    // the dead zone the whole time. Nothing is turning.
+    _fbDragReset();_fbLanded();return;
+  }
+  // THE QUICK SWIPE AND THE DELIBERATE DRAG ARE THE SAME GESTURE. The only
+  // thing that separates them is this line, evaluated at release rather than
+  // at pointerdown: a flick commits at whatever angle it happened to reach,
+  // anything slower has to be past halfway. FB_FLICK_PX is the old 40px
+  // SWIPE_PX, demoted from a rule of its own to a distance floor so a fast
+  // twitch can't count as a flick.
+  var fast=(Math.abs(vel)>FB_FLICK_VEL);
+  var withTurn=((vel<0)===(_fbDragDir>0));   // finger moving the way the leaf is
+  var flick=fast&&withTurn&&(Math.abs(dx)>=FB_FLICK_PX);
+  // The mirror of the flick, and it needs to be here or the angle rule wins an
+  // argument it shouldn't: pull the page 120° open, then flick back to abandon
+  // it, and without this the release commits because 120 > 90. Throwing the
+  // page back is as clear a statement of intent as throwing it forward, so it
+  // gets the same authority. No distance floor — the travel that matters was
+  // already made on the way out.
+  var unflick=fast&&!withTurn;
+  var commit=unflick?false:(flick||_fbDragProg>90);
+  var toProg=commit?180:0;
+  // Proportional to the angle still to travel, or a commit from 170° snaps
+  // and a commit from 20° wades. Floored so the short ones stay watchable.
+  var dur=Math.max(FB_SETTLE_MIN_MS,FB_TURN_MS*Math.abs(toProg-_fbDragProg)/180);
+  _fbRun(_fbDragProg,toProg,dur,false,commit,commit?(_fbIdx+_fbDragDir):-1);
+}
+
 function openFlipbook(){
   if(_fbOpen)return;
   // Captures the live page's real snapshot before anything is overlaid.
   saveCurPage();
   _fbOpen=true;
   _fbIdx=curPage;
+  _fbStaticAtEnd=-1;
   _pgEditMode=false;_pgEditIdx=-1;
   for(var i=0;i<pages.length;i++)_fbEnsureShots(i);
   var fb=_fbEl('flipbook');
@@ -7735,6 +8152,13 @@ function closeFlipbook(){
   _fbOpen=false;
   _fbAnim=false;_fbPending=-1;
   if(_fbAnimTimer){clearTimeout(_fbAnimTimer);_fbAnimTimer=null;}
+  // A settle in flight owns the leaf's inline transform and shade opacity. If
+  // it isn't stopped and reset here it either keeps writing to a hidden
+  // element or leaves the leaf parked at 180° for the next open.
+  _fbRunTok++;   // retires any loop mid-flight
+  if(_fbSettleRaf){cancelAnimationFrame(_fbSettleRaf);_fbSettleRaf=0;}
+  _fbDragReset();
+  _fbStaticAtEnd=-1;
   var leaf=_fbEl('fb-leaf');if(leaf)leaf.classList.remove('on');
   var un=_fbEl('fb-under');if(un)un.classList.remove('on');
   var fb=_fbEl('flipbook');if(fb){fb.classList.remove('open');fb.classList.remove('fb-edit');fb.classList.remove('fb-turning');}
@@ -7776,34 +8200,57 @@ function togglePages(){if(_fbOpen)closeFlipbook();else openFlipbook();}
   var add=_fbEl('fb-add');
   if(add)add.addEventListener('click',function(e){e.stopPropagation();addPage();});
 
-  // ── Swipe / tap on the page ──
+  // ── Drag / tap on the page ──
   // e.buttons is always 0 on touch, so drag state is a dedicated flag.
-  var _pDown=false,_pX=0,_pY=0,_pMoved=false,_pFired=false;
-  var SWIPE_PX=40, TAP_PX=8;
+  // The leaf tracks the finger from FB_DRAG_LOCK_PX onward; whether that
+  // becomes a page turn or springs back is decided in _fbDragRelease().
+  var _pDown=false,_pX=0,_pY=0,_pMoved=false,_pNoDrag=false;
+  var _pLastX=0,_pLastT=0,_pVel=0;
+  var TAP_PX=8;   // FB_DRAG_LOCK_PX must stay above this — see its comment
   page.addEventListener('pointerdown',function(e){
-    _pDown=true;_pX=e.clientX;_pY=e.clientY;_pMoved=false;_pFired=false;
+    _pDown=true;_pX=e.clientX;_pY=e.clientY;_pMoved=false;
+    // A turn already in flight owns the leaf. Tap-to-exit still works during
+    // one; only the drag is suppressed.
+    _pNoDrag=_fbAnim;
+    _pLastX=e.clientX;_pLastT=(e.timeStamp||Date.now());_pVel=0;
     try{page.setPointerCapture(e.pointerId);}catch(ex){}
   });
   page.addEventListener('pointermove',function(e){
     if(!_pDown)return;
     var dx=e.clientX-_pX,dy=e.clientY-_pY;
     if(Math.abs(dx)>TAP_PX||Math.abs(dy)>TAP_PX)_pMoved=true;
-    if(!_pFired&&Math.abs(dx)>SWIPE_PX&&Math.abs(dx)>Math.abs(dy)){
-      _pFired=true;
-      _fbGo(_fbIdx+(dx<0?1:-1));
+    var now=(e.timeStamp||Date.now());
+    if(now>_pLastT){
+      _pVel=(e.clientX-_pLastX)/(now-_pLastT);
+      _pLastX=e.clientX;_pLastT=now;
     }
+    if(!_fbDrag){
+      if(_pNoDrag)return;
+      if(Math.abs(dx)<FB_DRAG_LOCK_PX)return;
+      // Vertical for now — don't lock, but don't kill the gesture either; a
+      // finger that curls into a horizontal drag should still get one.
+      if(Math.abs(dy)>Math.abs(dx))return;
+      _fbDrag=true;_fbAnim=true;_fbDragDir=0;_fbDragNo=0;_fbDragProg=0;
+      var fbx=_fbEl('flipbook');if(fbx)fbx.classList.add('fb-turning');
+    }
+    _fbDragTrack(dx);
   });
   function pageUp(e){
     if(!_pDown)return;
     _pDown=false;
     try{page.releasePointerCapture(e.pointerId);}catch(ex){}
-    if(_pFired)return;
+    if(_fbDrag){_fbDragRelease(e.clientX-_pX,_pVel);return;}
     if(_pMoved)return;
     if(_pgEditMode){setPgEditMode(false);return;}
     _fbCommit();
   }
   page.addEventListener('pointerup',pageUp);
-  page.addEventListener('pointercancel',function(){_pDown=false;});
+  page.addEventListener('pointercancel',function(){
+    _pDown=false;
+    // Same release rule as a normal lift, minus the velocity: a cancel at
+    // 160° should still land, not snap back.
+    if(_fbDrag)_fbDragRelease(_pLastX-_pX,0);
+  });
 
   // ── Scrub bar: tap, drag-to-flip, long-press for edit mode ──
   var _sDown=false,_sMoved=false,_sLong=null,_sX=0;
@@ -8227,7 +8674,10 @@ function promptExportName(defaultName, ext, callback){
 }
 
 // ── PNG export ────────────────────────────────────────────────────
-function expPNG(){var _sg=gridH.visible,_sa=axisGroup.visible,_ss=surfGroup.visible,_sy=_symGuideGroup.visible;gridH.visible=false;axisGroup.visible=false;surfGroup.visible=false;_symGuideGroup.visible=false;renderer.render(scene,activeCam());const url=renderer.domElement.toDataURL('image/png');const a=document.createElement('a');a.href=url;a.download='spetchbook.png';a.click();gridH.visible=_sg;axisGroup.visible=_sa;surfGroup.visible=_ss;_symGuideGroup.visible=_sy;markDirty();toast('PNG saved');}
+// Session 110: PNG was the one exporter with no name step at all — it wrote a
+// hardcoded 'spetchbook.png'. It now takes (expName) like every sibling and is
+// reached through promptExportName(), so it shares _lastFileName too.
+function expPNG(expName){var _sg=gridH.visible,_sa=axisGroup.visible,_ss=surfGroup.visible,_sy=_symGuideGroup.visible;gridH.visible=false;axisGroup.visible=false;surfGroup.visible=false;_symGuideGroup.visible=false;renderer.render(scene,activeCam());const url=renderer.domElement.toDataURL('image/png');const a=document.createElement('a');a.href=url;a.download=(expName||'spetchbook')+'.png';a.click();gridH.visible=_sg;axisGroup.visible=_sa;surfGroup.visible=_ss;_symGuideGroup.visible=_sy;markDirty();toast('PNG saved');}
 
 function expSVG(expName){
   if(!strokes.length){alert('Nothing to export.');return;}
@@ -8331,7 +8781,11 @@ function _doSaveFile(name){renderer.render(scene,activeCam());var src=renderer.d
 function saveFileWithName(defaultName,onComplete){var snmod=document.getElementById('save-name-modal');var inp=document.getElementById('save-name-input');inp.value=defaultName||_lastFileName||FILE_NAME_DEFAULT;snmod._onComplete=onComplete||null;snmod.classList.add('vis');inp.focus();inp.select();}
 function saveFile(){saveFileWithName(null,null);}
 function loadFile(){document.getElementById('filein').click();}
-document.getElementById('filein').addEventListener('change',function(){const f=this.files[0];if(!f)return;const r=new FileReader();r.onload=function(ev){try{loadAllPages(JSON.parse(ev.target.result));toast('Loaded');}catch(e){alert('Invalid file.');}};r.readAsText(f);this.value='';});
+// Adopt the opened file's name as the remembered one, so exporting a GLB
+// straight after opening dragon.json offers 'dragon' rather than 'spetchbook'.
+// Set BEFORE the parse: loadAllPages() is what would surface a name if the
+// format ever carried one, and this must not win over that.
+document.getElementById('filein').addEventListener('change',function(){const f=this.files[0];if(!f)return;_setLastFileName(f.name.replace(/\.json$/i,''));const r=new FileReader();r.onload=function(ev){try{loadAllPages(JSON.parse(ev.target.result));toast('Loaded');}catch(e){alert('Invalid file.');}};r.readAsText(f);this.value='';});
 // ── IndexedDB auto-save (replaces localStorage) ────────────────────
 // Same 30s interval, same JSON format, much higher quota
 // Falls back to localStorage if IndexedDB unavailable
@@ -8573,7 +9027,10 @@ function startRecordViews(){
     _recState=null;
     if(!recChunks.length){toast('No recording data');return;}
     var blob=new Blob(recChunks,{type:mimeType});
-    promptExportName('spetchbook-views',fileExt,function(name){
+    // null, not 'spetchbook-views': passing an explicit defaultName
+    // short-circuits promptExportName's ||_lastFileName fallback, so the
+    // recording used to be the one export that ignored the remembered name.
+    promptExportName(null,fileExt,function(name){
       var url=URL.createObjectURL(blob);
       var a=document.createElement('a');a.href=url;a.download=name+fileExt;a.click();
       URL.revokeObjectURL(url);toast('Recording saved');
@@ -14983,6 +15440,10 @@ document.getElementById('pb-vel').addEventListener('click',()=>document.getEleme
   _on('uw-tb-toggle',function(){
     document.body.classList.toggle('uw-topbar-hidden');
     _uwSyncToggleLabels();
+    // Was missing, unlike its two sibling tabs. #topbar is adopted into
+    // #uw-side, so hiding it changes the host's width and therefore
+    // --uw-cl/--uw-cr; without this refresh the insets went stale.
+    _uwRefresh();
   });
   _on('uw-prim-toggle',function(e){
     e.stopPropagation();
@@ -15861,7 +16322,7 @@ document.querySelectorAll('.theme-btn').forEach(function(b){
   // Wire new file menu items
   document.getElementById('em-save').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');saveFile();});
   document.getElementById('em-load').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');loadFile();});
-  document.getElementById('em-png').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');expPNG();});
+  document.getElementById('em-png').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');promptExportName(null,'.png',expPNG);});
   document.getElementById('em-svg').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');promptExportName(null,'.svg',expSVG);});
   var emScale=document.getElementById('em-scale');
   var _emScaleLpTimer=null;
@@ -16362,13 +16823,24 @@ var _scState={
   detachedHidden:false,  // v11: user X'd the detached cards; show FAB to bring back
   gizmoFirst:false       // v44: nav↔gizmo swap persisted
 };
-var _scHasSavedScale=false; // set true below iff a scale was actually persisted
+// Session 110: the sidecol zoom auto-fit re-runs on every format transition
+// (see _sidecolAutoFit). _scUserScaled turns it off for the REST OF THE
+// SESSION as soon as the user drags #stab. It is deliberately NOT part of
+// _scState and NOT persisted: a deliberate resize is respected until reload,
+// then the column goes back to fitting itself. Persisting it would have
+// needed a migration too — every existing sk3d_sc blob carries a `scale`
+// that the old once-ever auto-fit wrote, not one the user chose, so there is
+// no way to tell the two apart on disk. Session-only sidesteps that entirely.
+// Declared HERE rather than beside _sidecolAutoFit() for the same reason
+// _lastFileName is declared beside _savePrefs() — a `var` initialiser further
+// down the script would re-run after a writer and silently reset it.
+var _scUserScaled=false;
 try{
   var _saved=localStorage.getItem('sk3d_sc');
   if(_saved){
     var _p=JSON.parse(_saved);
     function _clamp(v,lo,hi){return Math.max(lo,Math.min(hi,v));}
-    if(typeof _p.scale==='number'){_scState.scale=_clamp(_p.scale,NAV_SCALE_MIN,SC_MAX);_scHasSavedScale=true;}
+    if(typeof _p.scale==='number'){_scState.scale=_clamp(_p.scale,NAV_SCALE_MIN,SC_MAX);}
     if(typeof _p.detachedScale==='number')_scState.detachedScale=_clamp(_p.detachedScale,NAV_SCALE_MIN,SC_MAX);
     if(typeof _p.fcScale==='number')_scState.fcScale=_clamp(_p.fcScale,NAV_SCALE_MIN,SC_MAX);
     if(typeof _p.rside==='boolean')_scState.rside=_p.rside;
@@ -16456,6 +16928,9 @@ function positionStab(){
   _sidecolFitHeight();
   positionStabScroll();
   _sidecolPinBottom();
+  // The column's inner edge is one bound of the drawing area — keep the view
+  // frame's cached band in step. No-ops while a layout transition holds it.
+  if(window._vfSnapshot)window._vfSnapshot();
 }
 
 // Only crop #sidecol when it would actually go over #topbar — never
@@ -16929,6 +17404,10 @@ function _updateScFab(){
       _scState.sideOpen=!_scState.sideOpen;
       sidecol.classList.toggle('collapsed',!_scState.sideOpen);
       positionStab();positionLclFloat();
+    } else {
+      // A real drag, not a tap-collapse. Stops _sidecolAutoFit() for the rest
+      // of this session so a rotation can't undo what was just set by hand.
+      _scUserScaled=true;
     }
     _saveScState();
     state=null;
@@ -17013,10 +17492,30 @@ if(_scState.detached){
   applySidecol();
   _updateScFab();
 }
-// First-ever load (nothing persisted yet): auto-shrink the sidecol zoom, if
-// needed, so its content isn't cropped by default. Runs once — as soon as it
-// saves a scale, _scHasSavedScale-equivalent state exists on disk and this
-// never fires again on a later load, so it can't fight a deliberate resize.
+// ── Sidecol auto-fit (session 110) ────────────────────────────────────────
+// Fits #sidecol's zoom to the height actually available, so its content isn't
+// cropped. Scales BOTH ways — down when the band is tight, back up to SC_MAX
+// when there's room again.
+//
+// Through session 109 this ran exactly ONCE, ever: it was gated on nothing
+// having been persisted yet, and its own _saveScState() then suppressed it on
+// every later load. So a column fitted to a portrait tablet stayed at that
+// zoom forever after a rotation into landscape. It now re-runs from the tail
+// of updateLayoutMode(), i.e. on every rotation and window resize.
+//
+// The one thing that stops it is _scUserScaled — set when the user drags
+// #stab, cleared only by a reload. See its declaration for why it is
+// session-scoped rather than persisted.
+//
+// MEASUREMENT ORDER IS LOAD-BEARING. _sidecolAnchorSync() writes
+// left/right/bottom DIVIDED BY the current scale, because zoom rescales an
+// element's own offsets as well as its contents (gotchas #61/#65). Dropping
+// zoom to 1 without also re-running the anchor sync leaves those offsets
+// divided by the OLD scale, so the box measures at the wrong bottom edge and
+// `available` comes out wrong by (1/scale - 1) x --sc-bottom. The once-ever
+// version got away with this because scale was always exactly 1 the one time
+// it ran. Hence: set _scState.scale=1, applyZoom, THEN anchor-sync, THEN
+// measure.
 //
 // Computes the needed scale directly from a single unzoomed measurement,
 // rather than iteratively decrementing and re-checking scrollHeight vs
@@ -17027,27 +17526,46 @@ if(_scState.detached){
 // almost never became true before hitting SC_MIN or the 30-step guard —
 // regardless of how much screen space was actually available. See
 // gotchas.md's session-79 entry.
-if(!_scHasSavedScale){
-  setTimeout(function(){
-    if(document.body.classList.contains('narrow-mode'))return;
-    var prevScale=_scState.scale;
-    applyZoom(sidecol,1);
-    sidecol.style.maxHeight='none';
-    var r=sidecol.getBoundingClientRect();
-    var naturalHeight=r.height;
-    var available=r.bottom-_sidecolTopClearance(); // real topbar edge, matches _sidecolFitHeight()
-    if(naturalHeight>0&&naturalHeight>available){
-      var needed=Math.floor((available/naturalHeight)*50)/50; // snap to the same 0.02 step as before
-      _scState.scale=Math.max(NAV_SCALE_MIN,Math.min(SC_MAX,needed));
-    } else {
-      _scState.scale=SC_MAX;
-    }
-    applyZoom(sidecol,_scState.scale);
+function _sidecolAutoFit(){
+  if(!sidecol)return;
+  if(_scUserScaled)return;              // deliberate resize this session — hands off
+  var b=document.body;
+  if(b.classList.contains('narrow-mode'))return;
+  if(b.classList.contains('uw-mode'))return;      // zoom owned by _uwFitControl()
+  if(b.classList.contains('sc-detached'))return;  // cards are on body, not in the column
+  if(b.classList.contains('ui-hidden'))return;    // display:none measures as zeros (session 83)
+  if(getComputedStyle(sidecol).display==='none')return;
+  var prevScale=_scState.scale;
+  // Unzoomed measurement, with the anchor offsets rewritten for scale 1 first
+  // — see the header comment. Without this the bottom edge is wrong.
+  _scState.scale=1;
+  applyZoom(sidecol,1);
+  _sidecolAnchorSync();
+  sidecol.style.maxHeight='none';
+  var r=sidecol.getBoundingClientRect();
+  var naturalHeight=r.height;
+  var available=r.bottom-_sidecolTopClearance(); // real topbar edge, matches _sidecolFitHeight()
+  if(!naturalHeight||!available||available<=0){   // nothing measurable — restore and bail
+    _scState.scale=prevScale;
+    applyZoom(sidecol,prevScale);
     _sidecolAnchorSync();
-    if(_scState.scale!==prevScale)_saveScState();
-    positionStab();positionLclFloat();
-  },200);
+    return;
+  }
+  if(naturalHeight>available){
+    var needed=Math.floor((available/naturalHeight)*50)/50; // snap to the same 0.02 step as before
+    _scState.scale=Math.max(NAV_SCALE_MIN,Math.min(SC_MAX,needed));
+  } else {
+    _scState.scale=SC_MAX;
+  }
+  applyZoom(sidecol,_scState.scale);
+  _sidecolAnchorSync();
+  if(_scState.scale!==prevScale)_saveScState();
+  positionStab();positionLclFloat();
 }
+window._sidecolAutoFit=_sidecolAutoFit;
+// Initial pass. Still delayed — fonts/icons settle after first paint and the
+// natural height is wrong before they do.
+setTimeout(_sidecolAutoFit,200);
 window.addEventListener('resize',positionStab);
 
 // ── Swap nav ↔ gizmo in control card ──
@@ -17156,6 +17674,238 @@ function _fitColorsRow(){
 }
 window._fitBarRow=_fitBarRow;
 window._fitColorsRow=_fitColorsRow;
+
+// ================================================================
+//  VIEW FRAME — keep the drawing put across format transitions (session 110)
+// ================================================================
+// The canvas is always the FULL viewport (_syncRenderer does setSize(vw,vh))
+// and every panel overlays it, so the projection centre is the viewport
+// centre — which is not the centre of the area you can actually see the
+// drawing in. In wide mode with a left-docked #sidecol, cam.target renders
+// roughly 85px left of the middle of the free area, and on a rotation nothing
+// compensated at all: the drawing simply landed wherever the new geometry put
+// it.
+//
+// This recentres on FORMAT TRANSITIONS ONLY — a change of layout mode
+// (narrow / wide / ultra-wide) or of orientation. Not on every resize: the
+// Android URL bar sliding in and out fires visualViewport resize constantly,
+// and recentring on each one would make the drawing creep while nothing is
+// happening.
+//
+// PAN ONLY. cam.radius and orthoZoom are untouched, so the world height on
+// screen is exactly what it was and a rotation cannot change your zoom level.
+// The alternative — rescaling to preserve everything that was visible — was
+// modelled and rejected: it takes the max of both axes each time, so
+// portrait -> landscape -> portrait ratchets the zoom out by 3.5x.
+var _vfCache=null;   // {rect,sig} for the layout as it currently stands
+
+// The unobstructed band of canvas, in CSS px, plus the viewport it was
+// measured against (kept together so a snapshot stays self-consistent even
+// after the viewport has changed under it).
+function _freeRect(){
+  var vvp=window.visualViewport;
+  var vw=vvp?vvp.width:window.innerWidth;
+  var vh=vvp?vvp.height:window.innerHeight;
+  var b=document.body;
+  var L=0,T=0,R=vw,B=vh;
+  function vis(id){
+    var el=document.getElementById(id);
+    if(!el)return null;
+    var cs=getComputedStyle(el);
+    if(cs.display==='none'||cs.visibility==='hidden')return null;
+    var r=el.getBoundingClientRect();
+    if(!r.width||!r.height)return null;
+    return r;
+  }
+  if(!b.classList.contains('ui-hidden')){
+    if(b.classList.contains('uw-mode')){
+      // Two full-height columns. --uw-cl/--uw-cr are already exactly this,
+      // computed by _uwSyncInsets() and consumed by #views the same way.
+      var ds=getComputedStyle(document.documentElement);
+      var cl=parseFloat(ds.getPropertyValue('--uw-cl'))||0;
+      var cr=parseFloat(ds.getPropertyValue('--uw-cr'))||0;
+      L=cl;R=vw-cr;
+    }else{
+      // #topbar and #prim-bar are centred pills, not full-width bars, so
+      // treating them as a full-width top inset over-crops slightly at the
+      // corners. That is deliberate: what matters here is a band that is
+      // measured the SAME WAY before and after, not one that is maximal.
+      var rt=vis('topbar'),rp=vis('prim-bar');
+      if(rt)T=Math.max(T,rt.bottom);
+      if(rp)T=Math.max(T,rp.bottom);
+      if(b.classList.contains('narrow-mode')){
+        var rn=vis('narrow-bar');
+        if(rn)B=Math.min(B,rn.top);
+        // Only a DOCKED float card is a permanent bottom band. A free one is
+        // draggable and parked wherever the user left it — letting it deform
+        // the frame would make the recentre depend on where a card happens to
+        // be sitting.
+        var cardEl=document.getElementById('pb-float-card');
+        if(cardEl&&cardEl.classList.contains('fc-docked-bottom')){
+          var rc=vis('pb-float-card');
+          if(rc)B=Math.min(B,rc.top);
+        }
+      }else{
+        // Docked column only. When `sc-detached` is set the groups are
+        // parented on body and float free — the same exception as an undocked
+        // float card, and for the same reason: a panel the user drags around
+        // must not deform the frame.
+        var rs=b.classList.contains('sc-detached')?null:vis('sidecol');
+        if(rs){
+          if(b.classList.contains('rside'))R=Math.min(R,rs.left);
+          else L=Math.max(L,rs.right);
+        }
+        var rb=vis('sbar');
+        if(rb)B=Math.min(B,rb.top);
+      }
+    }
+  }
+  // A band this small means something measured wrong (mid-transition rects,
+  // a collapsed panel). Fall back to the whole viewport rather than pan the
+  // camera off to one side on the strength of a bad number.
+  if(R-L<80){L=0;R=vw;}
+  if(B-T<80){T=0;B=vh;}
+  return {left:L,top:T,right:R,bottom:B,vw:vw,vh:vh};
+}
+
+// Layout mode + orientation. Equality here is what "same format" means, and
+// that is the WHOLE definition — deliberately.
+//
+// v110b briefly folded the chrome insets in here, so hiding #sidecol, docking
+// the control card or dragging #stab each counted as a transition and moved
+// the drawing. That was a misreading of the scope and it was reverted in
+// v110c. The panels are to be TAKEN INTO ACCOUNT when a format change
+// happens; they are not themselves format changes. An app that re-frames
+// every time a panel is toggled is constantly adjusting under the user's
+// hand, which is worse than not framing at all.
+//
+// _freeRect() already accounts for every one of them — the docked float card
+// and narrow bar in tall, #sidecol in wide, the #sidecol-uw columns in
+// ultra-wide — so whatever is showing at the moment of a rotation or mode
+// switch is exactly what the recentre frames against. That is the entire
+// requirement. DO NOT put panel visibility back into this function.
+function _formatSig(){
+  var vvp=window.visualViewport;
+  var vw=vvp?vvp.width:window.innerWidth;
+  var vh=vvp?vvp.height:window.innerHeight;
+  var b=document.body;
+  var mode=b.classList.contains('narrow-mode')?'n':
+           (b.classList.contains('uw-mode')?'u':'w');
+  return mode+(vw>=vh?'L':'P');
+}
+
+// World-space offset from cam.target to the point sitting at the centre of
+// `rect`, on the plane through the target perpendicular to the view. Pure
+// arithmetic off the camera basis — no DOM reads, so it can be evaluated
+// against a cached rect from the previous layout.
+function _vfOffset(rect){
+  var ndcX=(((rect.left+rect.right)/2)/rect.vw)*2-1;
+  var ndcY=-((((rect.top+rect.bottom)/2)/rect.vh)*2-1);
+  var aspect=rect.vw/rect.vh;
+  var halfH=useOrtho?orthoZoom:(Math.tan(camera.fov*Math.PI/360)*cam.radius);
+  var halfW=halfH*aspect;
+  // camera.quaternion is set by lookAt() inside updCam(), so it is current
+  // without waiting for a render / matrixWorld update.
+  var q=activeCam().quaternion;
+  var right=new THREE.Vector3(1,0,0).applyQuaternion(q);
+  var up=new THREE.Vector3(0,1,0).applyQuaternion(q);
+  return right.multiplyScalar(ndcX*halfW).add(up.multiplyScalar(ndcY*halfH));
+}
+
+// _vfSnapshot is called from positionStab(), the single owner of "the column's
+// geometry just changed" — collapsing #sidecol with a tap moves the free
+// rect's left edge by ~176px and fires no resize, so without this the next
+// transition would frame against a stale band.
+//
+// THE INVARIANT: only _vfRecenter() may advance the cache ACROSS a format
+// change. Everything else refreshes the cache only while the signature still
+// matches. A pending transition is _vfRecenter()'s to consume, and nothing
+// else is allowed to consume it for free.
+//
+// This is not belt-and-braces, it is the actual fix for the tall->wide bug:
+// the two resize listeners run in registration order, so updateLayoutMode()
+// (line ~4735) strips `narrow-mode` synchronously, and positionStab()
+// (line ~17118) then runs in the SAME event, no longer early-returns, and
+// snapshots the incoming wide layout — all long before the 60ms tail that
+// _vfHold protects. The tail then compared the new rect against itself,
+// computed a zero offset, and left the drawing at the viewport centre, 93px
+// left of the wide free band. It looked exactly like the feature not being
+// there. See gotchas.md Rule #110(b).
+//
+// _vfHold is still needed for the other half: an in-tail reflow at the SAME
+// signature (the auto-fit calling positionStab()) would otherwise snapshot a
+// half-settled box.
+var _vfHold=0;
+function _vfSnapshot(){
+  if(_vfHold)return;
+  try{
+    var sig=_formatSig();
+    if(_vfCache&&_vfCache.sig!==sig)return;   // transition pending — not ours to consume
+    _vfCache={rect:_freeRect(),sig:sig};
+  }catch(ex){}
+}
+window._vfSnapshot=_vfSnapshot;
+window._vfHoldPush=function(){_vfHold++;};
+window._vfHoldPop=function(){if(_vfHold>0)_vfHold--;};
+
+// Adopt the current layout unconditionally, consuming any pending transition
+// without acting on it. Used where a recentre is deliberately declined (FPS,
+// flipbook) — without this the pending transition would sit in the cache
+// forever and fire on some unrelated later resize.
+function _vfAdopt(){
+  try{_vfCache={rect:_freeRect(),sig:_formatSig()};}catch(ex){}
+}
+
+// Pan cam.target so the world point at fromRect's centre lands at toRect's.
+// Orientation is unchanged by a resize, so both offsets share a camera basis
+// and the anchored point cancels to a pure translation.
+function _vfApply(fromRect,toRect){
+  var off=_vfOffset(fromRect).sub(_vfOffset(toRect));
+  if(!isFinite(off.x)||!isFinite(off.y)||!isFinite(off.z))return false;
+  if(off.lengthSq()===0)return false;
+  cam.target.add(off);
+  updCam();
+  return true;
+}
+
+// Android reports intermediate viewport dimensions during a rotation — the
+// same settling _syncRenderer's RAF debounce exists for. The 60ms tail can
+// therefore correct against a band that is still moving. One follow-up pass
+// applies the residual, and only if the band actually moved: same signature
+// (a real format change belongs to _vfRecenter, not here) and a >24px shift
+// in either centre or either viewport dimension. 24px is the same threshold
+// used to decide a resize is more than URL-bar noise.
+var _vfSettleTimer=null;
+function _vfScheduleSettle(){
+  if(_vfSettleTimer)clearTimeout(_vfSettleTimer);
+  _vfSettleTimer=setTimeout(function(){
+    _vfSettleTimer=null;
+    if(!_vfCache||_fpsMode||_fbOpen)return;
+    var sig=_formatSig();
+    if(sig!==_vfCache.sig)return;          // a new transition is pending — not ours
+    var o=_vfCache.rect,nr=_freeRect();
+    var dcx=Math.abs((nr.left+nr.right)/2-(o.left+o.right)/2);
+    var dcy=Math.abs((nr.top+nr.bottom)/2-(o.top+o.bottom)/2);
+    if(dcx<24&&dcy<24&&Math.abs(nr.vw-o.vw)<24&&Math.abs(nr.vh-o.vh)<24)return;
+    _vfApply(o,nr);
+    _vfCache={rect:nr,sig:sig};
+  },260);
+}
+
+window._vfRecenter=_vfRecenter;
+function _vfRecenter(){
+  // FPS mode: cam.target IS the eye. Panning it would teleport the walker.
+  if(_fpsMode){_vfAdopt();return;}
+  if(_fbOpen){_vfAdopt();return;}   // flipbook is up; nothing to frame
+  var prev=_vfCache;
+  var sig=_formatSig();
+  if(!prev){_vfAdopt();return;}
+  var nr=_freeRect();
+  if(prev.sig===sig){_vfCache={rect:nr,sig:sig};return;}  // same format — just refresh
+  _vfApply(prev.rect,nr);
+  _vfCache={rect:nr,sig:sig};
+  _vfScheduleSettle();
+}
 
 function updateLayoutMode(){
   // Use visualViewport when available — gives correct dimensions in PWA standalone
@@ -17273,7 +18023,21 @@ function updateLayoutMode(){
     }
   }
   // Insets/fit depend on the final layout, so this runs after both branches.
-  setTimeout(function(){if(window._uwRefresh)window._uwRefresh();},60);
+  // ORDER MATTERS: _uwRefresh() writes the ultra-wide column insets, then the
+  // sidecol auto-fit can change the column's own width and height, and only
+  // once both have landed is the free rect the recentre measures actually
+  // final. Reversing any pair here frames against a layout that is about to
+  // move.
+  setTimeout(function(){
+    if(window._vfHoldPush)window._vfHoldPush();
+    try{
+      if(window._uwRefresh)window._uwRefresh();
+      if(window._sidecolAutoFit)window._sidecolAutoFit();
+    }finally{
+      if(window._vfHoldPop)window._vfHoldPop();
+    }
+    if(window._vfRecenter)window._vfRecenter();
+  },60);
 }
 
 function _fcReparent(){
@@ -17867,7 +18631,7 @@ window.addEventListener('keydown',e=>{
     case 'a':toggleAxis(!axisLinesOn);break;case 's':document.getElementById('ssmooth').click();break;
     case 'w':document.getElementById('svel').click();break;
     case 'l':if(window._rulerToggle) window._rulerToggle();break;
-    case 'p':expPNG();break;case 'h':document.getElementById('bhide').click();break;
+    case 'p':promptExportName(null,'.png',expPNG);break;case 'h':document.getElementById('bhide').click();break;
     case 'escape':clearSelection();setMode(prevDrawMode);break;
     // Brush size: ] increase, [ decrease
     case ']':case '}':var bsEl=document.getElementById('sz-sld');if(bsEl){bsEl.value=Math.min(20,Number(bsEl.value)+1);bsEl.dispatchEvent(new Event('input'));}break;

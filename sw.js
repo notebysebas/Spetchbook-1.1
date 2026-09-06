@@ -6,7 +6,7 @@
 // precached asset) — this is the only thing that busts the old cache for
 // returning visitors. See handoff.md / gotchas.md for the carried-over
 // reminder this resolves.
-const CACHE_NAME = 'spetchbook-v109';
+const CACHE_NAME = 'spetchbook-v112d';
 
 const PRECACHE_URLS = [
   './',
