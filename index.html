@@ -953,12 +953,25 @@ body.rside #bprims{right:auto;left:8px}
    cleared on FPS exit so #bprims falls back to the 56/52 rules above. */
 
 /* Single-line toolbar under topbar */
-/* top: topbar is top:8 + 40px tall = bottom 48; +8px breathing room = 56. */
+/* top: topbar is top:8 + 40px tall = bottom 48; +8px breathing room = 56.
+   max-width: the SAME derivation as #topbar's, and for the same reason —
+   112 = 2 x 56, and 56 = 8 (screen edge) + 40 (#bprims / #bhide) + 8 (gap).
+   #prim-bar is centre-anchored like #topbar, so the cap must be symmetric:
+   half of it is what actually clears #bprims, and the symmetry is what makes
+   body.rside (which flips #bprims to the LEFT edge) work with no second rule.
+   The left half also clears #pb-fab at its default left:10 + 36px.
+   Session 115d: this was 100vw - 24px, which let the bar run under #bprims on
+   the right and under #pb-fab on the left — both sit ABOVE it in z-order
+   (300 and 251 vs 199), so the end buttons were simply covered. Gotcha #101
+   already listed #prim-bar as derived from #topbar's height, but only for its
+   `top`; the width was never brought across. Nothing is lost by the cap — the
+   bar scrolls horizontally. #pb-fab is draggable, so this fixes its DEFAULT
+   position only; it can still be parked on top of the bar by hand. */
 #prim-bar{position:fixed;top:56px;left:50%;transform:translateX(-50%);z-index:199;
   display:none;align-items:center;gap:3px;padding:3px 8px;
   background:var(--pan);border:1px solid var(--bdr);border-radius:8px;
   box-shadow:0 2px 10px rgba(0,0,0,.1);backdrop-filter:blur(12px);
-  max-width:calc(100vw - 24px);overflow-x:auto;scrollbar-width:none;
+  max-width:calc(100vw - 112px);overflow-x:auto;scrollbar-width:none;
   -webkit-overflow-scrolling:touch;white-space:nowrap}
 #prim-bar::-webkit-scrollbar{display:none}
 #prim-bar.open{display:flex}
@@ -1460,7 +1473,10 @@ body.ui-hidden #sc-fab{top:auto;right:auto;left:10px;bottom:148px}
   #bviews-hidden{top:6px;right:54px;width:38px;height:38px}
   #bprims{top:52px;width:38px;height:38px}
   #fps-plane-ctrl{top:52px}
-  #prim-bar{top:52px;max-width:calc(100vw - 16px)}
+  /* 108 = 2 x 54, and 54 = 8 + 38 (narrow #bprims) + 8 — the same derivation
+     as this block's #topbar rule, against the narrow box. Clears #bprims on
+     the right and #pb-fab (left:10 + 36) on the left. */
+  #prim-bar{top:52px;max-width:calc(100vw - 108px)}
 }
 /* ══════════════════ ULTRA-WIDE MODE (session 94) ══════════════════
    Third layout mode, alongside narrow (tall phone) and wide (tablet/desktop).
@@ -2142,7 +2158,7 @@ body.uw-mode:not(.ui-hidden) #bprims{display:none!important}
         <button id="ga-z" data-ga="z"></button>
       </div>
       <div style="display:none">
-        <button class="on mode" id="gm-move" data-gm="move"></button>
+        <button class="mode" id="gm-move" data-gm="move"></button>
         <button class="mode" id="gm-rotate" data-gm="rotate"></button>
         <button class="mode" id="gm-scale" data-gm="scale"></button>
       </div>
@@ -2920,7 +2936,7 @@ body.uw-mode:not(.ui-hidden) #bprims{display:none!important}
   <div class="cw" style="background:#2563a8" data-c="#2563a8"></div>
   <div class="cw" style="background:#cdb899;border:1px solid var(--bdr)" data-c="#cdb899"></div>
   <button id="scx-ccpick-btn" style="width:22px;height:26px;border-radius:5px;border:1px solid var(--bdr);background:transparent;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:0;position:relative;-webkit-tap-highlight-color:transparent">
-    <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="5" r="3.5" stroke="url(#cpg3)" stroke-width="1.5"/><defs><linearGradient id="cpg3"><stop offset="0%" stop-color="#e03040"/><stop offset="33%" stop-color="#40c040"/><stop offset="66%" stop-color="#2060c0"/><stop offset="100%" stop-color="#e03040"/></linearGradient></defs></svg>
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><circle cx="5" cy="5" r="3.5" stroke="url(#cpg3b)" stroke-width="1.5"/><defs><linearGradient id="cpg3b"><stop offset="0%" stop-color="#e03040"/><stop offset="33%" stop-color="#40c040"/><stop offset="66%" stop-color="#2060c0"/><stop offset="100%" stop-color="#e03040"/></linearGradient></defs></svg>
     <input type="color" id="scx-cpick" value="#2a9d8f" style="opacity:0;position:absolute;inset:0;width:100%;height:100%;cursor:pointer">
   </button>
 </div>
@@ -9130,6 +9146,24 @@ function promptExportName(defaultName, ext, callback){
   enmod._expExt=ext;
   enmod.classList.add('vis');
   inp.focus();inp.select();
+}
+
+// Guard the NAME STEP, not just the exporter. Every geometry exporter
+// (expGLTF/expOBJ/expUSD/expUSDZ/expSVG) already refuses an empty scene, but
+// it did so AFTER promptExportName() had taken a filename — so you named a
+// file that was never going to exist. This checks first.
+//
+// The per-exporter guards STAY as backstops and must not be removed: they
+// catch the residual cases this cannot (expGLTF gates on built meshes, expSVG
+// on projected paths, so a page of sub-2-point strokes still fails there),
+// and expPNG() is proof these functions also get called directly rather than
+// only through the export menu.
+//
+// PNG is deliberately NOT routed through here — a blank canvas is a legitimate
+// PNG, and 114c settled that the file's job is to match the window.
+function _promptExportIfAny(ext, callback){
+  if(!strokes.length){toast('Nothing to export');return;}
+  promptExportName(null, ext, callback);
 }
 
 // ── PNG export ────────────────────────────────────────────────────
@@ -16952,7 +16986,7 @@ document.querySelectorAll('.theme-btn').forEach(function(b){
   document.getElementById('em-save').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');saveFile();});
   document.getElementById('em-load').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');loadFile();});
   document.getElementById('em-png').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');promptExportName(null,'.png',expPNG);});
-  document.getElementById('em-svg').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');promptExportName(null,'.svg',expSVG);});
+  document.getElementById('em-svg').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');_promptExportIfAny('.svg',expSVG);});
   var emScale=document.getElementById('em-scale');
   var _emScaleLpTimer=null;
   var _emScaleDidLp=false;
@@ -17179,8 +17213,18 @@ function newScene(){
     snmod._onComplete=null;
     hideSnm();
     _setLastFileName(name);
-    _doSaveFile(name);
-    if(cb)cb();
+    // _doSaveFile() reads back the canvas for the .json `thumb`, and it is
+    // reached from a modal whose input was focused — i.e. with the Android
+    // soft keyboard open and the drawing buffer shrunk. Same path expPNG()
+    // guards with _vvSettled(); without it the thumbnail bakes in the
+    // keyboard-shrunk aspect. See Critical Rule #117(c) / #120.
+    // cb MUST stay inside the callback: its only real caller is "save, then
+    // new scene" (#17144), and firing it synchronously would clear the scene
+    // before the capture runs.
+    _vvSettled(function(){
+      _doSaveFile(name);
+      if(cb)cb();
+    });
   }
   function cancel(){
     snmod._onComplete=null;
@@ -17221,10 +17265,10 @@ function newScene(){
 })();
 document.addEventListener('click',()=>document.getElementById('expmenu').classList.remove('vis'));
 document.getElementById('expmenu').addEventListener('click',e=>e.stopPropagation());
-document.getElementById('exgltf').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');promptExportName(null,'.glb',expGLTF);});
-document.getElementById('exobj').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');promptExportName(null,'.obj',expOBJ);});
-document.getElementById('exusd').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');promptExportName(null,'.usda',expUSD);});
-document.getElementById('exusdz').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');promptExportName(null,'.usdz',expUSDZ);});
+document.getElementById('exgltf').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');_promptExportIfAny('.glb',expGLTF);});
+document.getElementById('exobj').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');_promptExportIfAny('.obj',expOBJ);});
+document.getElementById('exusd').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');_promptExportIfAny('.usda',expUSD);});
+document.getElementById('exusdz').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');_promptExportIfAny('.usdz',expUSDZ);});
 document.getElementById('exjson').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');saveFile();});
 document.getElementById('exrecord').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');startRecordViews();});
 document.getElementById('vw-rec').addEventListener('click',function(){startRecordViews();});
@@ -19166,10 +19210,13 @@ function _fcResizeCanvases(){
   if(fab){
     // Default sits just under #topbar (top:8, ~34 tall, so its bottom is ~42).
     // left:10 matches the x the fab uses in ui-hidden. The stacked LCL circle
-    // follows at +LCL_STACK_DY. NOTE: #prim-bar is at top:56 and centred with
-    // max-width:calc(100vw - 16px), so on a phone with many primitive buttons
-    // its left end can reach this band — both are draggable/scrollable, and the
-    // fab is z:251 over prim-bar's 199.
+    // follows at +LCL_STACK_DY. NOTE: #prim-bar shares this band (top:52/56)
+    // and is centred. As of 115d its max-width carries #topbar's symmetric
+    // derivation (100vw - 112 / - 108), whose left half clears this fab at
+    // left:10 + 36 — so the DEFAULT position no longer collides. The fab is
+    // draggable and z:251 over prim-bar's 199, so it can still be parked on
+    // top of the bar by hand; both remain reachable (fab drags, bar scrolls).
+    // If you move this default x, re-check that derivation.
     fab.style.left='10px';fab.style.top='50px';
     // Room the stacked LCL circle needs BELOW the fab in tall mode, so dragging
     // the fab to the bottom edge doesn't push its companion off-screen.
