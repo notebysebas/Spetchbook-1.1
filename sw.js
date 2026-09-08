@@ -25,7 +25,7 @@
 //
 // Bump VENDOR_CACHE only when the pinned Three.js revision actually changes.
 // The old key then fails both exclusions below and is reaped normally.
-const CACHE_NAME   = 'spetchbook-v115d';
+const CACHE_NAME   = 'spetchbook-v119c';
 const VENDOR_CACHE = 'spetchbook-vendor-r128';
 
 const VENDOR_URLS = [

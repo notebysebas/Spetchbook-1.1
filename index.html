@@ -426,7 +426,11 @@ body.narrow-mode.fps-active #fps-joy-look{display:none!important}
 /* Look panel inside control card — only visible in FPS */
 #pb-panel-look{display:none}
 body.fps-active #pb-panel-look{display:flex}
-#pb-panel-look .pb-panel-hdr span{text-align:center;cursor:default;border-color:transparent;font-size:6px;letter-spacing:.1em}
+/* Session 116: was `#pb-panel-look .pb-panel-hdr span`. That header now also
+   holds #pb-look-zoom, whose five inner spans this descendant selector would
+   have swept up — and at 1,1,1 it beats .nzj-lbl's 0,1,0, so the jog's − / +
+   would have shrunk from 9px to 6px. Pinned to the label itself. */
+#pb-panel-look #pb-look-lbl{text-align:center;cursor:default;border-color:transparent}
 #pb-panel-look .pb-look-vt{display:flex;justify-content:center;gap:8px;padding:2px 0;flex-shrink:0}
 #pb-panel-look .pb-look-vt button.held,#pb-panel-look .pb-look-vt button:active{background:rgba(var(--ink-r),var(--ink-g),var(--ink-b),.15);border-color:rgba(var(--ink-r),var(--ink-g),var(--ink-b),.3)}
 #fps-crosshair{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:249;width:20px;height:20px;pointer-events:none;opacity:.35;display:none}
@@ -449,12 +453,44 @@ body.ui-hidden.fps-active #fps-move-card #fps-vt-card{display:none}
 body.ui-hidden.fps-active #pb-fps-move-card{
   display:flex!important;position:fixed;bottom:calc(var(--pb-h,0px) + 24px);left:24px;z-index:251;
   background:transparent;border:none}
-/* FPS plane ctrl: under #bhide (eye), holds toggle + sliders + exit */
-#fps-plane-ctrl{position:fixed;top:56px;right:8px;z-index:251;
+/* FPS plane ctrl: holds surf-mode toggle + DIST/SIZE sliders + ESC FPS.
+   Session 117: top was 56 (52 narrow), which is #bprims' OWN slot — the panel
+   opened directly underneath #bprims and ran on down through #bhide, and both
+   of those are z-index 300 against this panel's 251, so they were drawn on top
+   of it. Session 101 patched half of that by measuring this panel and pushing
+   #bprims below it in JS (_positionPrimsForFps), but #bhide was never in that
+   calculation and the eye stayed parked over the panel's lower half.
+   It now opens BELOW the entire top-right stack, which makes the whole thing a
+   CSS constant again and lets the JS positioner go:
+     wide   8 (#btbhide)+40 -> 48;  56 (#bprims)+40 -> 96;  104 (#bhide)+40 -> 144;  +8 = 152
+     narrow 6           +38 -> 44;  52          +38 -> 90;   98          +38 -> 136;  +8 = 144
+   In ui-hidden the stack collapses to #bhide alone at top:8, so the panel
+   comes back up to 56 rather than floating below 100px of nothing. */
+#fps-plane-ctrl{position:fixed;top:152px;right:8px;z-index:251;
   display:none;flex-direction:column;align-items:stretch;gap:6px;pointer-events:auto;
   background:var(--pan);border:1px solid var(--bdr);border-radius:8px;padding:8px 10px;
   backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);min-width:130px}
 body.fps-active #fps-plane-ctrl{display:flex}
+body.ui-hidden.fps-active #fps-plane-ctrl{top:56px}
+/* Session 117/118 — no orthographic projection in FPS. An ortho first-person
+   view has no vanishing point, so walking forward changes nothing on screen
+   except what clips; the parallax is the entire point of being in there.
+   117 dimmed these to opacity .3 to keep .nav-hdr-row's track count stable.
+   118 removes them outright — a greyed control the mode will never allow is
+   still clutter — and the row's tracks are re-declared below to suit, which
+   is the part that cannot be skipped: a display:none grid item stops being an
+   item, so the survivors slide DOWN the track list and the last track is left
+   empty (in wide that would hand the zoom jog a 28px track and strand the
+   1fr one).
+   The guard in togglePersp() stays regardless — keyboard V reaches that
+   function without touching any of these three. */
+body.fps-active #bpersp,
+body.fps-active #nav-persp,
+body.fps-active #pb-nav-persp{display:none}
+/* Wide/ultra-wide: NAV + ⌂ + jog. The two buttons drop their fixed 28px and
+   take a share of the row, the jog keeps its 48px floor and twice their
+   weight — 176px sidecol → 142 inner − 6 gaps = 136, split 34/34/68. */
+body.fps-active:not(.narrow-mode) .nav-hdr-row{grid-template-columns:1fr 1fr minmax(48px,2fr)}
 /* FPS rside: swap look joystick + plane ctrl to left when sidecol is on right */
 body.rside.fps-active #fps-joy-look{right:auto;left:24px}
 body.rside.fps-active #fps-plane-ctrl{right:auto;left:8px}
@@ -944,13 +980,12 @@ body.rside #expmenu{right:auto;left:44px;transform-origin:top left}
 #bprims.on{border-color:var(--ink)}
 body.ui-hidden #bprims{display:none}
 body.rside #bprims{right:auto;left:8px}
-/* Session 101: FPS no longer throws #bprims to the bottom-right corner
-   (`top:auto;bottom:8px;right:170px`). That read as the button jumping to a
-   random place. It now tucks directly under #fps-plane-ctrl and comes back to
-   its slot on exit — but the popup's height is not a constant (the DIST/SIZE
-   block is hidden at surf mode NONE), so the top is written from JS by
-   _positionPrimsForFps(), not from a CSS number. The inline `top` it writes is
-   cleared on FPS exit so #bprims falls back to the 56/52 rules above. */
+/* Session 101 moved #bprims out of a bottom-right CSS exile and parked it under
+   #fps-plane-ctrl, positioned from JS because that panel's height is not a
+   constant. Session 117 removed the need: the panel now opens below the whole
+   top-right stack instead of inside it, so #bprims keeps its ordinary 56/52
+   slot in FPS exactly as in every other mode, and _positionPrimsForFps() is
+   gone rather than left writing values nothing needs. */
 
 /* Single-line toolbar under topbar */
 /* top: topbar is top:8 + 40px tall = bottom 48; +8px breathing room = 56.
@@ -1337,6 +1372,39 @@ body.ui-hidden #sc-fab{top:auto;right:auto;left:10px;bottom:148px}
 .nzj-lbl.l{left:3px}
 .nzj-lbl.r{right:3px}
 
+/* Session 116 — the zoom jog moves panels in FPS + tall mode.
+   FPS is the only state where THREE .pb-panel children share the row (nav,
+   gizmo, look). #pb-panels is 12px of padding + 2 gaps of 4px, so on a 380px
+   phone each panel gets ~120px inner — below .nav-hdr-row's 149px floor, and
+   the jog is the last grid track, so it was the part that fell into the row's
+   own overflow-x:auto and read as cropped.
+   The fix is not to shrink the row, it is to move the jog to the one header in
+   that mode with nothing in it: #pb-panel-look's, which held an inert LOOK
+   label and nothing else. The nav row then drops to its other three, and its
+   floor falls to 8 + 3x28 + 2x3 = 98 — clear at 120 with room to spare, so
+   NAV / PERSP / ⌂ stop crowding as well. Session 118 then removed PERSP from
+   FPS altogether, so the row below is TWO tracks, not three; the 98 figure is
+   kept as the ceiling this had to clear, not as the current value.
+   Scoped to body.narrow-mode.fps-active, NOT to #narrow-bar: the LOOK panel
+   travels with the control card into #fc-panels (see _fcReparent), so this has
+   to hold docked AND floating. Both jogs are wired independently — see the
+   third setupZoomJog() call — so neither is ever the other's stand-in and the
+   Rule #119(c) delegation trap does not apply. */
+body.narrow-mode.fps-active #pb-panel-nav .nav-hdr-row{grid-template-columns:repeat(2,1fr)}
+body.narrow-mode.fps-active #pb-nav-zoom{display:none}
+/* Outside FPS the LOOK panel is display:none anyway, so this pair only ever
+   resolves in the mode above. The label is pinned to a fixed 26px so the jog
+   keeps every remaining pixel and still clears its own 48px floor. */
+/* flex:1 and an explicit min-width are BOTH required, and neither is optional.
+   .nav-zoom-jog's four children are all position:absolute, so the element has
+   NO intrinsic width — in .nav-hdr-row it got its size from a grid track
+   (minmax(48px,1fr)), and dropped into .pb-panel-hdr's plain flex row it
+   measured 2px. min-width also has to override .nav-zoom-jog's own
+   `min-width:0`, which exists so the grid track can shrink. */
+#pb-look-zoom{display:none;flex:1 1 auto;min-width:48px}
+body.fps-active #pb-look-zoom{display:block}
+#pb-panel-look #pb-look-lbl{flex:0 0 26px;font-size:5.5px;letter-spacing:.06em}
+
 /* Cycle+popover buttons */
 .cyc-btn{flex:1;height:28px;border-radius:5px;border:1px solid var(--bdr);
   background:rgba(var(--ink-r),var(--ink-g),var(--ink-b),.06);color:var(--ink);font-family:'DM Mono',monospace;
@@ -1472,7 +1540,7 @@ body.ui-hidden #sc-fab{top:auto;right:auto;left:10px;bottom:148px}
   body.ui-hidden #bhide{top:6px}
   #bviews-hidden{top:6px;right:54px;width:38px;height:38px}
   #bprims{top:52px;width:38px;height:38px}
-  #fps-plane-ctrl{top:52px}
+  #fps-plane-ctrl{top:144px}
   /* 108 = 2 x 54, and 54 = 8 + 38 (narrow #bprims) + 8 — the same derivation
      as this block's #topbar rule, against the narrow box. Clears #bprims on
      the right and #pb-fab (left:10 + 36) on the left. */
@@ -1941,7 +2009,7 @@ body.uw-mode:not(.ui-hidden) #bprims{display:none!important}
   <button class="vp-row" id="bprecision" title="Show distance/angle during transforms"><span class="vp-dot"></span>Precision</button>
   <div class="vp-sep"></div>
   <button class="vp-row" id="bscaleoverlay" title="Show 3D scale cage on drawing plane"><span class="vp-dot"></span>Scale Cage</button>
-  <button class="vp-row" id="bscaleselect" title="Select scale" style="font-size:8px;padding-left:20px">OFF</button>
+  <button class="vp-row" id="bscaleselect" title="Select scale" style="font-size:8px;padding-left:20px">Scale</button>
 </div>
 
 <!-- Symmetry axis popover — opened by #bsym-arrow -->
@@ -2504,8 +2572,19 @@ body.uw-mode:not(.ui-hidden) #bprims{display:none!important}
 
 <!-- Single-line ref toolbar (under topbar, toggleable) -->
 <div id="prim-bar">
+  <!-- Session 119c: was a face-on rect with a peaked cap above it and a
+       chevron below, which read as a house or a triangular prism rather than a
+       box — the flat front face gave it no depth, so the cap became a roof.
+       Now the standard isometric cube, corner-on: a regular hexagon plus a Y
+       from the centre to three alternating vertices. Same glyph as SURF_ICO's
+       cube (they were slightly different shapes for no reason); both now use
+       the same path, so the app has ONE cube.
+       The hexagon is regular on purpose — R = 5.4, so the side vertices sit at
+       7 +/- 5.4*cos30 = 2.3 / 11.7 and 7 +/- 5.4/2 = 4.3 / 9.7. An irregular
+       hexagon here projects as a rectangular box, not a cube, which is the
+       exact distinction being fixed. -->
   <button class="prim-tb-btn" id="prim-add-box" title="Add box">
-    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="10" height="8" rx="1"/><path d="M2 4L7 1L12 4"/><path d="M12 12L7 9L2 12"/><line x1="7" y1="1" x2="7" y2="9"/></svg>
+    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 1.6L11.7 4.3V9.7L7 12.4L2.3 9.7V4.3Z"/><path d="M2.3 4.3L7 7L11.7 4.3" stroke-width="1.1"/><path d="M7 7V12.4" stroke-width="1.1"/></svg>
   </button>
   <button class="prim-tb-btn" id="prim-add-sphere" title="Add sphere">
     <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="5.5"/><ellipse cx="7" cy="7" rx="2.5" ry="5.5"/><path d="M1.5 7Q7 5 12.5 7"/></svg>
@@ -2529,8 +2608,15 @@ body.uw-mode:not(.ui-hidden) #bprims{display:none!important}
   <button class="prim-tb-btn" id="prim-sel-btn" title="Tap scene to select ref object">
     <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3L3 10L6 8L8 12L10 11L8 7L11 7Z"/></svg>
   </button>
-  <button class="prim-tb-btn" id="prim-asplane-btn" title="Use selected ref as drawing plane">
-    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10L7 5L12 10"/><path d="M2 10L7 13L12 10L7 5Z" stroke-width="1"/></svg>
+  <!-- Session 116: was a bare diamond + roof stroke, which read as "a plane"
+       and not as "draw on it". The roof is gone (two glyphs plus a fold line
+       is too much at 12px), the diamond sits lower-left, and the pen is the
+       #scx-stylus body scaled to 0.62 with its cross-line dropped — same
+       glyph family, so the pen here and the pen in the stylus toggle read as
+       the same object. Verified by rendering at true 12px against its
+       prim-bar neighbours, the session-104 technique. -->
+  <button class="prim-tb-btn" id="prim-asplane-btn" title="Draw on primitive — use selected ref as drawing plane">
+    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1 10.8L6 8L11 10.8L6 13.4Z"/><path d="M11.5 2.4L13.1 4.0L9.6 7.5L7.9 7.9L8.3 6.2Z"/></svg>
   </button>
   <button class="prim-tb-btn on" id="prim-eye-btn" title="Show/hide all ref objects">
     <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M1 7Q3 4 7 4Q11 4 13 7Q11 10 7 10Q3 10 1 7Z"/><circle cx="7" cy="7" r="2"/></svg>
@@ -2655,7 +2741,7 @@ body.uw-mode:not(.ui-hidden) #bprims{display:none!important}
   <button class="emb" id="em-svg">Vector (SVG)</button>
   <button class="emb" id="exrecord">Record Views (video)</button>
   <div class="emsep"></div>
-  <button class="emb" id="em-scale" style="opacity:0.45">Scale: OFF</button>
+  <button class="emb" id="em-scale" style="opacity:0.45">Scale</button>
 </div>
 <input type="file" id="filein" accept=".json" style="display:none">
 
@@ -2757,8 +2843,18 @@ body.uw-mode:not(.ui-hidden) #bprims{display:none!important}
 
     <!-- Panel 3: Look (FPS only) — integrated look joystick -->
     <div class="pb-panel" id="pb-panel-look">
-      <div class="pb-panel-hdr">
-        <span class="cyc-btn" style="border-color:transparent;cursor:default;text-align:center;display:flex;align-items:center;justify-content:center">LOOK</span>
+      <!-- Session 116: this header used to be an inert LOOK label and nothing
+           else, while the nav panel next to it was one column too wide for the
+           screen. The zoom jog moved here for FPS; the nav row keeps its other
+           three. Third jog instance — setupZoomJog() is a factory and the
+           output is a rate, not a value, so there is no state to keep in sync
+           between the three (see its comment). -->
+      <div class="pb-panel-hdr" id="pb-look-hdr">
+        <span class="cyc-btn" id="pb-look-lbl" style="border-color:transparent;cursor:default;text-align:center;display:flex;align-items:center;justify-content:center">LOOK</span>
+        <div id="pb-look-zoom" class="nav-zoom-jog" title="Zoom — tap a side for one step, hold and slide for continuous">
+          <span class="nzj-track"></span><span class="nzj-tick"></span><span class="nzj-thumb"></span>
+          <span class="nzj-lbl l">−</span><span class="nzj-lbl r">+</span>
+        </div>
       </div>
       <div style="flex:1;position:relative;overflow:hidden;min-height:0">
         <div id="pb-fps-joy-look" style="display:flex;flex-direction:column;align-items:center;justify-content:center;position:absolute;inset:0">
@@ -6360,12 +6456,46 @@ function mergeLayer(srcLayer){
   });
 })();
 
+// ── Topbar menu exclusivity (session 118) ────────────────────────────────
+// The five topbar dropdowns were independent toggles, so opening one left the
+// others on screen and every one had to be dismissed by hand. They are now
+// mutually exclusive: each open path calls this first with its own id.
+//
+// NOT implemented as a delegated .click() on the other triggers — that is the
+// Rule #119(c) trap, and half of these triggers are display:none in one layout
+// or another (#topbar is reparented wholesale in ultra-wide). This removes the
+// state class directly, and routes through a menu's own closer where one
+// exists so the trigger's .on state is cleared with it.
+//
+// The two SUBMENUS always close, whichever menu is opening: #scale-pop and
+// #bgpop both hang off #view-pop / #expmenu, and a submenu outliving its
+// parent is never wanted. openScalePicker() deliberately does NOT call this —
+// it is opened BY those menus, not alongside them.
+var TOPBAR_MENUS=[['ruler-pop','open'],['sym-pop','open'],['view-pop','open'],
+                  ['layers-pop','open'],['expmenu','vis']];
+window._closeTopbarMenus=function(exceptId){
+  for(var i=0;i<TOPBAR_MENUS.length;i++){
+    var id=TOPBAR_MENUS[i][0],cls=TOPBAR_MENUS[i][1];
+    if(id===exceptId)continue;
+    var el=document.getElementById(id);
+    if(!el||!el.classList.contains(cls))continue;
+    if(id==='view-pop'&&window._closeViewPop){window._closeViewPop();continue;}
+    el.classList.remove(cls);
+    if(id==='layers-pop'){var lb=document.getElementById('blayers');if(lb)lb.classList.remove('on');}
+    if(id==='ruler-pop'){var ra=document.getElementById('bruler-arrow');if(ra)ra.classList.remove('on');}
+    if(id==='sym-pop'){var sa=document.getElementById('bsym-arrow');if(sa)sa.classList.remove('on');}
+  }
+  if(window.closeScalePicker)window.closeScalePicker();
+  var bg=document.getElementById('bgpop');if(bg)bg.classList.remove('open');
+};
+
 // Topbar LAYERS button — open/close popover below button
 (function(){
   var btn=document.getElementById('blayers');
   var pop=document.getElementById('layers-pop');
   if(!btn||!pop)return;
   function openLayersPop(trigger){
+    if(window._closeTopbarMenus)window._closeTopbarMenus('layers-pop');
     pop.classList.add('open');
     btn.classList.add('on');
     var br=trigger.getBoundingClientRect();
@@ -14480,8 +14610,39 @@ window._setSnapEnabled=function(v){
   // One step is ~5% of the current radius (or ortho zoom).
   const ZOOM_STEP=0.05; // fraction of current radius per tap
   const ZOOM_HOLD_DELAY=180; // ms before continuous starts
+  // Session 117 — FPS has no orbit radius to shrink, so zoom is TRANSLATION.
+  // cam.radius is not read by updCam() in FPS at all (the camera sits AT
+  // cam.target and looks along theta/phi), which is exactly why the jog was
+  // dead in FPS: it wrote a number nothing consumed.
+  //
+  // FPS_ZOOM_STEP is in world units per tap. 0.18 is chosen against the move
+  // joystick rather than against ZOOM_STEP: the jog's slow end is
+  // NZJ_RATE_MIN 4 steps/sec, so 4 x 0.18 = 0.72 u/s, which is exactly
+  // FPS_MOVE_SPEED (0.012) at 60fps — a held jog starts at the same walking
+  // pace the stick does. The fast end (NZJ_RATE_MAX 45) reaches 8.1 u/s.
+  //
+  // The direction is the GROUND-PROJECTED forward vector, the same one
+  // fpsMoveTick uses — deliberately not the true 3D look direction. Zoom is
+  // "walk toward what you are facing", so looking at the floor and zooming
+  // walks across it rather than burying the camera in it; vertical travel
+  // stays on the up/down buttons, exactly as it already does for the stick.
+  const FPS_ZOOM_STEP=0.18;
   function applyZoom(dir){
     // dir: +1 = zoom in (reduce radius), -1 = zoom out (increase radius)
+    if(_fpsMode){
+      var zsT=Math.sin(cam.theta),zcT=Math.cos(cam.theta),zsP=Math.sin(cam.phi);
+      var zfx=zsP*zcT,zfy=zsP*zsT;
+      var zgl=Math.sqrt(zfx*zfx+zfy*zfy);
+      var zgfx,zgfy;
+      // Looking straight up or down collapses the ground projection; fall back
+      // to the heading itself, same guard fpsMoveTick carries.
+      if(zgl<0.001){zgfx=zcT;zgfy=zsT;}
+      else{zgfx=zfx/zgl;zgfy=zfy/zgl;}
+      cam.target.x+=dir*zgfx*FPS_ZOOM_STEP;
+      cam.target.y+=dir*zgfy*FPS_ZOOM_STEP;
+      updCam();markDirty();
+      return;
+    }
     if(useOrtho){
       orthoZoom=Math.max(1,Math.min(50,orthoZoom*(1-dir*ZOOM_STEP)));
       syncOrtho();
@@ -14577,6 +14738,7 @@ window._setSnapEnabled=function(v){
   }
   setupZoomJog('nav-zoom');
   setupZoomJog('pb-nav-zoom');
+  setupZoomJog('pb-look-zoom');
 
 
   const PAN_SPEED=0.00015;  // world units per pixel deflection per frame, ×radius (slowed v14.2)
@@ -14812,42 +14974,16 @@ window._setSnapEnabled=function(v){
     // dist slider: only relevant in FOLLOW mode
     var distWrap=document.getElementById('fps-plane-dist-wrap');
     if(distWrap)distWrap.style.display=(_fpsSurfMode===1)?'flex':'none';
-    // Showing/hiding the dist slider changes #fps-plane-ctrl's height, and
-    // #bprims is parked under it — re-measure.
-    _positionPrimsForFps();
   }
   window._applyFpsSurfMode=_applyFpsSurfMode;
 
-  // ── #bprims placement during FPS (session 101) ────────────────────
-  // Before this it was thrown to the bottom-right by a CSS rule
-  // (`body.fps-active #bprims{top:auto;bottom:8px;right:170px}`), which read
-  // on device as the button moving somewhere random. It now tucks under
-  // #fps-plane-ctrl, which occupies its normal slot in FPS, and returns on
-  // exit. The popup's height is NOT constant — the DIST/SIZE block hides at
-  // surf mode NONE — so this measures rather than assuming, and has to re-run
-  // on every event that can change that height: FPS enter, surf-mode change,
-  // rside flip, and viewport resize.
-  function _positionPrimsForFps(){
-    var b=document.getElementById('bprims');
-    if(!b)return;
-    if(!document.body.classList.contains('fps-active')){
-      b.style.top='';b.style.bottom='';b.style.left='';b.style.right='';
-      return;
-    }
-    var pc=document.getElementById('fps-plane-ctrl');
-    if(!pc)return;
-    var r=pc.getBoundingClientRect();
-    if(!r.height)return;
-    b.style.bottom='';
-    b.style.top=(r.bottom+8)+'px';
-    // Follow the popup's own side, which #fps-plane-ctrl flips under .rside.
-    if(document.body.classList.contains('rside')){
-      b.style.right='';b.style.left='8px';
-    } else {
-      b.style.left='';b.style.right='8px';
-    }
-  }
-  window._positionPrimsForFps=_positionPrimsForFps;
+  // Session 117: _positionPrimsForFps() lived here. It measured
+  // #fps-plane-ctrl and wrote an inline top/left/right onto #bprims so the
+  // button sat below the panel. #fps-plane-ctrl now opens below the whole
+  // top-right stack instead of inside it, so #bprims needs no special FPS
+  // placement at all — the function, its window export and its four callers
+  // are DELETED rather than left writing values nothing reads (the dead-
+  // listener problem recorded for session 112d and again for 115).
 
   // Called when depth cues toggle changes — update follow-plane frosted meshes
   window._syncFpsDepth=function(){
@@ -14859,8 +14995,19 @@ window._setSnapEnabled=function(v){
 
   function enterFps(){
     if(_fpsMode)return;
+    // Session 117 — FPS is perspective-only. An orthographic first-person view
+    // has no vanishing point, so walking forward changes nothing on screen
+    // except what clips: the whole point of moving through the scene is the
+    // parallax an ortho projection does not have. setOrtho(false) is called
+    // BEFORE _fpsMode goes true so its 400ms lerp runs against the orbit
+    // camera it was written for, and it self-guards when already perspective.
+    // Remembered and restored on exit: forcing perspective is a consequence of
+    // entering FPS, not a change to the projection you chose, and silently
+    // keeping it after you leave would be a setting changed behind your back.
+    var _wasOrtho=useOrtho;
+    if(_wasOrtho&&typeof setOrtho==='function')setOrtho(false);
     // Save radius only for restore reference; we won't snap camera back
-    _fpsSavedCam={radius:cam.radius};
+    _fpsSavedCam={radius:cam.radius,ortho:_wasOrtho};
     // Compute orbit eye position → set as FPS eye
     var sinP=Math.sin(cam.phi),cosP=Math.cos(cam.phi);
     var sinT=Math.sin(cam.theta),cosT=Math.cos(cam.theta);
@@ -14883,9 +15030,6 @@ window._setSnapEnabled=function(v){
     if(window._syncLclButtons)window._syncLclButtons();
     // Resize control card canvases so look panel gets properly sized
     setTimeout(function(){if(window._fcResizeCanvases)window._fcResizeCanvases();},30);
-    // #fps-plane-ctrl only becomes visible once body.fps-active lands, so it
-    // has no measurable height until after this frame.
-    setTimeout(_positionPrimsForFps,0);
     toast('FPS mode · left:move · right:look');
   }
 
@@ -14895,6 +15039,7 @@ window._setSnapEnabled=function(v){
     var sinP=Math.sin(cam.phi),cosP=Math.cos(cam.phi);
     var sinT=Math.sin(cam.theta),cosT=Math.cos(cam.theta);
     var radius=(_fpsSavedCam&&_fpsSavedCam.radius)||cam.radius||10;
+    var restoreOrtho=!!(_fpsSavedCam&&_fpsSavedCam.ortho);
     // Orbit target = eye + forward * radius  (place target in front of eye)
     var fx=sinP*cosT,fy=sinP*sinT,fz=cosP;
     cam.target.set(
@@ -14910,7 +15055,9 @@ window._setSnapEnabled=function(v){
     _fpsMode=false;
     _fpsSavedCam=null;
     document.body.classList.remove('fps-active');
-    _positionPrimsForFps(); // clears the inline top/side back to the CSS slot
+    // AFTER _fpsMode goes false — setOrtho()'s lerp reads cam.radius, which
+    // only means anything again once the orbit state above has been rebuilt.
+    if(restoreOrtho&&typeof setOrtho==='function')setOrtho(true);
     _disposeFpsPlane();
     surfGroup.visible=true; // always restore surface visibility
     updCam();
@@ -16169,6 +16316,10 @@ function cycleSurfGrid(){
 }
 
 function togglePersp(){
+  // Session 117/118: not offered in FPS. The three buttons are display:none in
+  // that mode, but the keyboard shortcut and any future caller reach this
+  // function directly, so the refusal lives here rather than only in the view.
+  if(_fpsMode){toast('Perspective only in FPS');return;}
   setOrtho(!useOrtho);
 }
 var _orthoLerp=null;
@@ -16265,7 +16416,10 @@ var PLANE_LABELS_G={xz:'Front',xy:'Top',yz:'Side'};
 // plane: at this size a dashed outline plus a slash turns to mud.
 var SURF_ICO={
   plane:'<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2.6" y="2.6" width="8.8" height="8.8" rx="0.6" fill="currentColor" fill-opacity="0.22"/></svg>',
-  cube:'<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 1.6L12.2 4.3V9.7L7 12.4L1.8 9.7V4.3Z"/><path d="M1.8 4.3L7 7L12.2 4.3" stroke-width="1.1"/><path d="M7 7V12.4" stroke-width="1.1"/></svg>',
+  // Session 119c: side vertices moved 1.8/12.2 -> 2.3/11.7 so the hexagon is
+  // regular. It was half a pixel wide of a true iso cube, which reads as a
+  // slightly flattened box. Now byte-identical to #prim-add-box's glyph.
+  cube:'<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 1.6L11.7 4.3V9.7L7 12.4L2.3 9.7V4.3Z"/><path d="M2.3 4.3L7 7L11.7 4.3" stroke-width="1.1"/><path d="M7 7V12.4" stroke-width="1.1"/></svg>',
   cylinder:'<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="7" cy="3.4" rx="4.3" ry="1.7"/><path d="M2.7 3.4V10.6"/><path d="M11.3 3.4V10.6"/><path d="M2.7 10.6A4.3 1.7 0 0 0 11.3 10.6"/></svg>',
   sphere:'<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="5.2"/><ellipse cx="7" cy="7" rx="5.2" ry="2.1" stroke-width="1"/></svg>',
   cone:'<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M7 1.6L11.3 10.2"/><path d="M7 1.6L2.7 10.2"/><ellipse cx="7" cy="10.2" rx="4.3" ry="1.7"/></svg>',
@@ -16585,6 +16739,7 @@ document.querySelectorAll('.theme-btn').forEach(function(b){
   }
 
   function openPop(){
+    if(window._closeTopbarMenus)window._closeTopbarMenus('view-pop');
     // Sync .on states with current visibility
     document.getElementById('bsurf').classList.toggle('on',surfGroup.visible);
     document.getElementById('bgrid').classList.toggle('on',gridH.visible);
@@ -16743,6 +16898,9 @@ document.querySelectorAll('.theme-btn').forEach(function(b){
     arrow.addEventListener('click',function(e){
       e.stopPropagation();
       var r=arrow.getBoundingClientRect();
+      // Read the intent BEFORE toggling: this is a toggle, and the other menus
+      // must only be swept away when this one is actually opening.
+      if(!pop.classList.contains('open')&&window._closeTopbarMenus)window._closeTopbarMenus('sym-pop');
       pop.classList.toggle('open');
       if(!(window._uwPlacePop&&window._uwPlacePop(pop,arrow))){
         pop.style.top=(r.bottom+4)+'px';
@@ -16860,15 +17018,18 @@ document.querySelectorAll('.theme-btn').forEach(function(b){
     pop.querySelectorAll('.sp-item').forEach(function(b){
       b.classList.toggle('active',parseInt(b.dataset.si)===exportScaleIdx);
     });
+    // Session 116: the OFF state now reads "Scale" rather than "OFF".
+    // #bscaleselect sits under "Scale Cage" in #view-pop with no label of its
+    // own, so a bare OFF said nothing about what was off; #em-scale matches it.
     var isOff=SCALE_STEPS[exportScaleIdx]===null;
-    var sqLbl=isOff?'OFF':'1 sq = '+SCALE_LABELS[exportScaleIdx];
+    var sqLbl=isOff?'Scale':'1 sq = '+SCALE_LABELS[exportScaleIdx];
     // Sync the view-pop label
     var lbl=document.getElementById('bscaleselect');
     if(lbl)lbl.textContent=sqLbl;
     // Sync em-scale in file menu
     var em=document.getElementById('em-scale');
     if(em){
-      em.textContent='Scale: '+(isOff?'OFF':SCALE_LABELS[exportScaleIdx]);
+      em.textContent=isOff?'Scale':'Scale: '+SCALE_LABELS[exportScaleIdx];
       em.style.opacity=isOff?'0.45':'';
     }
   }
@@ -16894,14 +17055,38 @@ document.querySelectorAll('.theme-btn').forEach(function(b){
   window.openScalePicker=function(anchor){
     syncActive();
     pop.classList.add('open');
+    // Session 116. #em-scale is now the picker's main entry point, and in
+    // ultra-wide #em-scale lives inside #expmenu, which hangs off #topbar
+    // after _uwAdopt() reparents it into the full-height #sidecol-uw column —
+    // the exact geometry that made session 115 fix #expmenu itself. Same
+    // remedy: place laterally via the shared helper, keep the old
+    // right-of-anchor maths as the non-uw fallback.
+    if(window._uwPlacePop&&window._uwPlacePop(pop,anchor))return;
     var br=anchor.getBoundingClientRect();
-    // Position to the right of the anchor or below
+    // Guard for the failure above: any hidden or not-yet-laid-out anchor
+    // measures 0x0, and every branch below is arithmetic on that rect, so the
+    // popup silently lands in the corner rather than failing loudly. Same
+    // guard _uwPlacePop already carries (`if(!br.width&&!br.height)return`).
+    if(!br.width&&!br.height){
+      pop.style.top=Math.max(4,Math.round(window.innerHeight*0.5)-160)+'px';
+      pop.style.left=Math.max(4,Math.round(window.innerWidth*0.5)-50)+'px';
+      return;
+    }
+    // Measured, not assumed: .open is already set above, so the picker has a
+    // real box. The old code hard-coded 120/320 and was wrong for both.
+    var pw=pop.offsetWidth||110, ph=pop.offsetHeight||320;
+    // Right of the anchor, then LEFT of it, then pinned to the right edge.
+    // Session 118: the middle branch is new. It used to drop BELOW the anchor
+    // aligned to br.left, which was harmless only while the caller hid its own
+    // menu first — #expmenu now stays open, and "below, aligned left" lands
+    // squarely on top of it.
     var left=br.right+6;
+    if(left+pw>window.innerWidth-4){
+      left=br.left-pw-6;
+      if(left<4)left=Math.max(4,window.innerWidth-pw-4);
+    }
     var top=br.top;
-    // If goes off right edge, position below
-    if(left+120>window.innerWidth){left=Math.max(4,br.left);top=br.bottom+4;}
-    // If goes off bottom, scroll up
-    if(top+320>window.innerHeight)top=Math.max(4,window.innerHeight-324);
+    if(top+ph>window.innerHeight-4)top=Math.max(4,window.innerHeight-ph-4);
     pop.style.top=top+'px';
     pop.style.left=left+'px';
   };
@@ -16980,45 +17165,43 @@ document.querySelectorAll('.theme-btn').forEach(function(b){
     e.stopPropagation();
     var menu=document.getElementById('expmenu');
     var open=menu.classList.toggle('vis');
-    if(open)_placeExpMenu(menu,btn);
+    // After the toggle is fine here (unlike the two arrows above) because the
+    // result is read, not inferred — and the sweep must run before placement,
+    // which measures against a settled layout.
+    if(open){
+      if(window._closeTopbarMenus)window._closeTopbarMenus('expmenu');
+      _placeExpMenu(menu,btn);
+    }
   });
   // Wire new file menu items
   document.getElementById('em-save').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');saveFile();});
   document.getElementById('em-load').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');loadFile();});
   document.getElementById('em-png').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');promptExportName(null,'.png',expPNG);});
   document.getElementById('em-svg').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');_promptExportIfAny('.svg',expSVG);});
+  // Session 116: this used to CYCLE on tap and hide the full list behind a
+  // 400ms long-press, so reaching a specific scale meant tapping through the
+  // whole ladder. It now opens the picker on a plain tap, the same way
+  // #bruler-arrow opens #ruler-pop — every option visible, one tap to pick.
+  // The long-press timer and its three companion listeners are gone with the
+  // cycle branch; nothing else referenced them.
+  //
+  // Session 118: #expmenu STAYS OPEN behind the picker, the way every other
+  // submenu in the app behaves — #bruler-arrow does not close the topbar, and
+  // #bscaleselect does not close #view-pop. 116 dismissed it here and that was
+  // wrong twice over: it made Scale the only export-menu row whose submenu
+  // orphaned its parent, and it meant a mis-tap cost you the whole menu.
+  //
+  // Two things had to move for the menu to survive:
+  //   - the blanket `document.addEventListener('click', … remove('vis'))`
+  //     near the export handlers now exempts #scale-pop, or clicking the
+  //     picker's own padding would close the menu behind it;
+  //   - openScalePicker's fallback placement now tries the LEFT of the anchor
+  //     before dropping below it, because "below, aligned to br.left" put the
+  //     picker directly on top of a menu that is no longer being hidden.
   var emScale=document.getElementById('em-scale');
-  var _emScaleLpTimer=null;
-  var _emScaleDidLp=false;
-  emScale.addEventListener('pointerdown',function(e){
-    _emScaleDidLp=false;
-    var self=this;
-    _emScaleLpTimer=setTimeout(function(){
-      _emScaleDidLp=true;
-      document.getElementById('expmenu').classList.remove('vis');
-      openScalePicker(self);
-    },400);
-  });
-  emScale.addEventListener('pointerup',function(){clearTimeout(_emScaleLpTimer);});
-  emScale.addEventListener('pointercancel',function(){clearTimeout(_emScaleLpTimer);});
-  emScale.addEventListener('contextmenu',function(e){e.preventDefault();});
   emScale.addEventListener('click',function(e){
-    if(_emScaleDidLp){_emScaleDidLp=false;return;}
     e.stopPropagation();
-    exportScaleIdx=(exportScaleIdx+1)%SCALE_STEPS.length;
-    var lbl=SCALE_LABELS[exportScaleIdx];
-    var isOff=SCALE_STEPS[exportScaleIdx]===null;
-    this.textContent='Scale: '+(isOff?'OFF':lbl);
-    this.style.opacity=isOff?'0.45':'';
-    // Sync hidden bscale element
-    var bs=document.getElementById('bscale');
-    if(bs){bs.textContent=isOff?'OFF':lbl;bs.style.opacity=isOff?'0.45':'';bs.classList.toggle('on',!isOff);}
-    // Sync view-pop label
-    var vps=document.getElementById('bscaleselect');
-    if(vps)vps.textContent=isOff?'OFF':'1 sq = '+lbl;
-    buildScaleBar();updateScaleBarLabel();
-    if(_gscaleOn)updateScaleCage();
-    toast(isOff?'Scale off':'1 sq = '+lbl);
+    openScalePicker(this);
   });
 })();
 
@@ -17108,10 +17291,10 @@ function newScene(){
   scaleBarGroup.visible=false;_sbMesh.visible=false;
   _gscaleOn=false;_gscaleGroup.visible=false;_gscaleLastIdx=-1;
   var _bso=document.getElementById('bscaleoverlay');if(_bso)_bso.classList.remove('on');
-  var _bss=document.getElementById('bscaleselect');if(_bss)_bss.textContent='OFF';
+  var _bss=document.getElementById('bscaleselect');if(_bss)_bss.textContent='Scale';
   if(window.closeScalePicker)closeScalePicker();
   var _bscale=document.getElementById('bscale');
-  if(_bscale){_bscale.textContent='OFF';_bscale.style.opacity='0.45';_bscale.classList.remove('on');}
+  if(_bscale){_bscale.textContent='Scale';_bscale.style.opacity='0.45';_bscale.classList.remove('on');}
   // ── Reset camera ──
   cam.theta=-Math.PI/2;cam.phi=Math.PI/2;cam.radius=10;cam.target.set(0,0,0);
   useOrtho=false;orthoZoom=8;
@@ -17163,7 +17346,7 @@ function newScene(){
   // now, so all three reset together.
   if(window._syncPerspBtns)window._syncPerspBtns(useOrtho);
   twoFingerMode='orbit';updateGestLabel();
-  var _emsc=document.getElementById('em-scale');if(_emsc){_emsc.textContent='Scale: OFF';_emsc.style.opacity='0.45';}
+  var _emsc=document.getElementById('em-scale');if(_emsc){_emsc.textContent='Scale';_emsc.style.opacity='0.45';}
   toast('New scene');
 }
 (function(){
@@ -17263,7 +17446,14 @@ function newScene(){
     if(e.key==='Escape'){cancel();}
   });
 })();
-document.addEventListener('click',()=>document.getElementById('expmenu').classList.remove('vis'));
+// Session 118: #scale-pop is exempt. It is #expmenu's submenu and now opens
+// WITHOUT dismissing it, so a click on the picker's own padding (anything not
+// caught by the .sp-item handler's stopPropagation) would otherwise reach this
+// listener and close the menu the picker is anchored to.
+document.addEventListener('click',function(e){
+  if(e.target&&e.target.closest&&e.target.closest('#scale-pop'))return;
+  document.getElementById('expmenu').classList.remove('vis');
+});
 document.getElementById('expmenu').addEventListener('click',e=>e.stopPropagation());
 document.getElementById('exgltf').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');_promptExportIfAny('.glb',expGLTF);});
 document.getElementById('exobj').addEventListener('click',()=>{document.getElementById('expmenu').classList.remove('vis');_promptExportIfAny('.obj',expOBJ);});
@@ -18188,9 +18378,6 @@ if(_sbSideBtn){
     _scState.rside=!_scState.rside;
     applySidecol();
     _saveScState();
-    // #fps-plane-ctrl flips sides with .rside, and #bprims is parked under it
-    // during FPS — re-place it on the new side.
-    if(window._positionPrimsForFps)window._positionPrimsForFps();
   });
 }
 
@@ -18684,7 +18871,6 @@ function updateLayoutMode(){
       var h=pb.getBoundingClientRect().height;
       document.documentElement.style.setProperty('--pb-h',h+'px');
       // FPS popup may have moved/resized with the viewport.
-      if(window._positionPrimsForFps)window._positionPrimsForFps();
       // Viewport may have rotated/resized under a visible floating card.
       if(window._fcSettle)window._fcSettle();
       // Re-sync surface group so plane isn't stale after canvas resize
@@ -19627,7 +19813,14 @@ animate();
   // generalized edge/arc-based geometry system — see "Shape geometry" below.
   var _rulerType   = 'straight'; // 'straight' | 'prot180' | 'prot360' | 'tri45' | 'tri3060'
   var _mirrored    = false;      // triangle-only: flips which corner holds the right angle
-  var _shapeScale  = 1.0;        // protractors + triangles: uniform size multiplier, drag-handle controlled
+  // Session 116 extended this from protractors + triangles to all five shapes.
+  // Session 119 narrowed what it means for the STRAIGHT ruler: LENGTH ONLY.
+  // 116 read "object size and length on screen" as uniform scale and grew the
+  // body width with it, which is wrong for a ruler — a real one gets longer,
+  // not fatter, and a 2.5x body eats the drawing area for no gain. The other
+  // four shapes are unchanged and still scale uniformly (a protractor with a
+  // fixed rim thickness and a growing radius would be a different object).
+  var _shapeScale  = 1.0;        // all five shapes: uniform size multiplier, drag-handle controlled
   var SCALE_MIN = 0.4, SCALE_MAX = 2.5;
   var _rulerEdgeIdx = -1;        // which edge of a non-straight shape the current stroke is locked to
   var _menuSnapDeg = 0;          // 0 = off (falls back to the old magnetic 45° snap below),
@@ -19700,6 +19893,36 @@ animate();
   var WORLD_HALF_LEN   = 5.0;
   var WORLD_HALF_WIDTH = 0.3;
 
+  // ── Straight-ruler length accessors (session 116, narrowed in 119) ──
+  // The straight ruler has four size constants. Session 116 routed all four
+  // through accessors so _shapeScale could reach them; session 119 establishes
+  // that only the two LENGTH ones should scale:
+  //
+  //   scaled   0.65 screen-length factor  -> _sHW()
+  //   scaled   WORLD_HALF_LEN             -> _wHL()
+  //   FIXED    BODY_H                     read directly
+  //   FIXED    WORLD_HALF_WIDTH           read directly
+  //
+  // The two cross-axis constants are read directly again rather than kept as
+  // identity accessors — a function that only ever returns its own constant is
+  // indirection that implies a scaling it no longer does, and the next session
+  // would have to read it to find out.
+  function _sHW(){ return Math.max(window.innerWidth,window.innerHeight)*0.65*_shapeScale; }
+  function _wHL(){ return WORLD_HALF_LEN*_shapeScale; }
+  // Straight-ruler handle offsets, ruler-local. Same numbers prot180 uses for
+  // its rotate/scale pair, so all five shapes wear the handles in the same
+  // place relative to one another. Deliberately NOT scaled: the handles are
+  // touch targets, and a 0.4x ruler with 0.4x handles is unusable.
+  var STR_ROT_X = 56, STR_SCL_Y = 30;      // screen mode, px
+  // Double-tap window for the scale handle's reset-to-default. 400ms matches
+  // MT_TAP_MS, which session 114b raised from 250 for Android's slower contact
+  // sequencing — the same hardware reason applies here, so the same number.
+  // Double-tap the scale handle resets size — see _onCaptureUp. Uses the same
+  // window as the rotate handle's existing double-tap so the two handles feel
+  // the same under a finger.
+  var _sclLastTap = 0;
+  var STR_ROT_WX = 1.0, STR_SCL_WY = 0.45; // world mode, units
+
   var _wGroup = null;
   var _wMesh  = null;
   var _wRC    = new THREE.Raycaster();
@@ -19771,10 +19994,10 @@ animate();
                     .addScaledVector(planeY, _wPos.y)
                     .addScaledVector(planeN, 0.004);
     var corners = [
-      origin.clone().addScaledVector(rulerX, -WORLD_HALF_LEN).addScaledVector(rulerY,  WORLD_HALF_WIDTH),
-      origin.clone().addScaledVector(rulerX,  WORLD_HALF_LEN).addScaledVector(rulerY,  WORLD_HALF_WIDTH),
-      origin.clone().addScaledVector(rulerX,  WORLD_HALF_LEN).addScaledVector(rulerY, -WORLD_HALF_WIDTH),
-      origin.clone().addScaledVector(rulerX, -WORLD_HALF_LEN).addScaledVector(rulerY, -WORLD_HALF_WIDTH),
+      origin.clone().addScaledVector(rulerX, -_wHL()).addScaledVector(rulerY,  WORLD_HALF_WIDTH),
+      origin.clone().addScaledVector(rulerX,  _wHL()).addScaledVector(rulerY,  WORLD_HALF_WIDTH),
+      origin.clone().addScaledVector(rulerX,  _wHL()).addScaledVector(rulerY, -WORLD_HALF_WIDTH),
+      origin.clone().addScaledVector(rulerX, -_wHL()).addScaledVector(rulerY, -WORLD_HALF_WIDTH),
     ];
     return corners.map(function(w){ return { world:w, screen:_w2s(w) }; });
   }
@@ -20269,8 +20492,7 @@ animate();
 
   // ── Draw screen-space ruler ──────────────────────────────────────
   function _drawScreen(){
-    var W=window.innerWidth, H=window.innerHeight;
-    var hw=Math.max(W,H)*0.65;
+    var hw=_sHW(), bh=BODY_H;   // bh is NOT scaled — see _sHW's comment
     _ctx.save();
     _ctx.translate(_cx*_dpr, _cy*_dpr);
     _ctx.scale(_dpr, _dpr);
@@ -20281,39 +20503,60 @@ animate();
     _ctx.strokeStyle='rgba(160,130,80,0.8)'; _ctx.lineWidth=1;
     var r=4;
     _ctx.beginPath();
-    _ctx.moveTo(-hw+r,-BODY_H*.5);
-    _ctx.arcTo(hw,-BODY_H*.5,hw,BODY_H*.5,r);
-    _ctx.arcTo(hw,BODY_H*.5,-hw,BODY_H*.5,r);
-    _ctx.arcTo(-hw,BODY_H*.5,-hw,-BODY_H*.5,r);
-    _ctx.arcTo(-hw,-BODY_H*.5,hw,-BODY_H*.5,r);
+    _ctx.moveTo(-hw+r,-bh*.5);
+    _ctx.arcTo(hw,-bh*.5,hw,bh*.5,r);
+    _ctx.arcTo(hw,bh*.5,-hw,bh*.5,r);
+    _ctx.arcTo(-hw,bh*.5,-hw,-bh*.5,r);
+    _ctx.arcTo(-hw,-bh*.5,hw,-bh*.5,r);
     _ctx.closePath(); _ctx.fill();
     _ctx.shadowColor='transparent'; _ctx.stroke();
 
     _ctx.strokeStyle='rgba(110,80,30,0.45)'; _ctx.lineWidth=1.5;
-    _ctx.beginPath(); _ctx.moveTo(-hw+r,-BODY_H*.5+.75); _ctx.lineTo(hw-r,-BODY_H*.5+.75); _ctx.stroke();
+    _ctx.beginPath(); _ctx.moveTo(-hw+r,-bh*.5+.75); _ctx.lineTo(hw-r,-bh*.5+.75); _ctx.stroke();
 
     var ppm=_pxPerMeter(), tickM=ppm?_tickInterval(ppm):null;
     _ctx.font='6.5px "DM Mono",ui-monospace,monospace';
     _ctx.textAlign='center'; _ctx.textBaseline='top';
+    // ── Session 119: the scale must END INSIDE THE RULER ──
+    // These loops ran to `Math.ceil(hw/tickPx)+2`, i.e. two whole ticks PAST
+    // the end of the body. That was invisible for as long as the ruler was
+    // guaranteed longer than the screen; the moment the scale handle can make
+    // it shorter, the ticks carry on past the rounded cap into empty canvas
+    // and the ruler reads as measuring more than it covers.
+    //
+    // The rule: the series stops at the last WHOLE tick unit that fits inside
+    // the body, and the remainder is left blank. A ruler 7.4 units long shows
+    // 7 and leaves the 0.4 empty — a partial final division is worse than no
+    // division, because it is still readable and it is wrong.
+    //
+    // `r` is the corner radius; subtracting it keeps the last tick clear of
+    // the rounded cap rather than landing on the curve.
+    var tickSpan=hw-r;
     if(tickM&&ppm){
-      var tickPx=tickM*ppm, nT=Math.ceil(hw/tickPx)+2;
+      var tickPx=tickM*ppm, nT=Math.max(0,Math.floor(tickSpan/tickPx));
       var majEvery=nT<=4?1:nT<=12?2:5;
       for(var i=-nT;i<=nT;i++){
         var tx=i*tickPx, isMaj=(i%majEvery===0), isMed=!isMaj&&(i%Math.max(1,Math.floor(majEvery/2))===0);
         var tH=isMaj?11:isMed?7:4;
         _ctx.strokeStyle='rgba(80,60,20,0.65)'; _ctx.lineWidth=isMaj?1.1:0.65;
-        _ctx.beginPath(); _ctx.moveTo(tx,-BODY_H*.5+1.5); _ctx.lineTo(tx,-BODY_H*.5+1.5+tH); _ctx.stroke();
+        _ctx.beginPath(); _ctx.moveTo(tx,-bh*.5+1.5); _ctx.lineTo(tx,-bh*.5+1.5+tH); _ctx.stroke();
         if(isMaj){
           var lbl=_fmt(Math.abs(i*tickM)), lw=_ctx.measureText(lbl).width;
-          if(tickPx*majEvery>=lw+4){ _ctx.fillStyle='rgba(70,50,15,0.75)'; _ctx.fillText(lbl,tx,-BODY_H*.5+14); }
+          // Two independent conditions: the label must not collide with its
+          // neighbour (the original test) AND, new in 119, it is centred on the
+          // tick so half of it must still fit inside the body. The last tick
+          // can sit legally at tickSpan and still hang its number over the cap.
+          if(tickPx*majEvery>=lw+4 && Math.abs(tx)+lw*0.5<=hw-2){
+            _ctx.fillStyle='rgba(70,50,15,0.75)'; _ctx.fillText(lbl,tx,-bh*.5+14);
+          }
         }
       }
     } else {
-      var STEP=40,nT2=Math.ceil(hw/STEP)+1;
+      var STEP=40,nT2=Math.max(0,Math.floor(tickSpan/STEP));
       for(var j=-nT2;j<=nT2;j++){
         var tx2=j*STEP,isMj=(j%5===0),isMd=(j%2===0)&&!isMj,tH2=isMj?11:isMd?7:4;
         _ctx.strokeStyle='rgba(80,60,20,0.45)'; _ctx.lineWidth=isMj?1.1:0.65;
-        _ctx.beginPath(); _ctx.moveTo(tx2,-BODY_H*.5+1.5); _ctx.lineTo(tx2,-BODY_H*.5+1.5+tH2); _ctx.stroke();
+        _ctx.beginPath(); _ctx.moveTo(tx2,-bh*.5+1.5); _ctx.lineTo(tx2,-bh*.5+1.5+tH2); _ctx.stroke();
       }
     }
 
@@ -20327,7 +20570,7 @@ animate();
     _ctx.beginPath(); _ctx.moveTo(-5,0); _ctx.lineTo(5,0); _ctx.moveTo(0,-5); _ctx.lineTo(0,5); _ctx.stroke();
 
     // Rotate handle — larger, shows numeric angle
-    var RHX=56;
+    var RHX=STR_ROT_X;
     _ctx.fillStyle=_drag&&_drag.type==='rot'?'rgba(80,55,15,0.38)':'rgba(130,100,45,0.22)';
     _ctx.strokeStyle='rgba(80,55,15,0.6)'; _ctx.lineWidth=1;
     _ctx.beginPath(); _ctx.arc(RHX,0,15,0,Math.PI*2); _ctx.fill(); _ctx.stroke();
@@ -20344,6 +20587,19 @@ animate();
     _ctx.fillStyle=_angleSnap?'rgba(80,55,15,0.75)':'rgba(0,0,0,0)';
     _ctx.strokeStyle='rgba(80,55,15,0.6)'; _ctx.lineWidth=0.9;
     _ctx.beginPath(); _ctx.arc(RHX,10,2,0,Math.PI*2); _ctx.fill(); _ctx.stroke();
+
+    // Scale handle (session 116) — same glyph, size and offset the four other
+    // shapes use, so the straight ruler resizes by the same gesture.
+    _ctx.fillStyle=_drag&&_drag.type==='scale'?'rgba(80,55,15,0.45)':'rgba(130,100,45,0.22)';
+    _ctx.strokeStyle='rgba(80,55,15,0.6)'; _ctx.lineWidth=1;
+    _ctx.beginPath(); _ctx.arc(RHX,STR_SCL_Y,12,0,Math.PI*2); _ctx.fill(); _ctx.stroke();
+    _ctx.save();
+    _ctx.translate(RHX,STR_SCL_Y); _ctx.rotate(-_angle);
+    _ctx.fillStyle='rgba(70,50,15,0.9)';
+    _ctx.font='bold 10px "DM Mono",ui-monospace,monospace';
+    _ctx.textAlign='center'; _ctx.textBaseline='middle';
+    _ctx.fillText('\u2922',0,0.5);
+    _ctx.restore();
 
     _ctx.restore();
   }
@@ -20455,12 +20711,16 @@ animate();
       var botEdgeY=-WORLD_HALF_WIDTH;
       // Step through in subDiv increments
       var step = subDiv;
-      var nT=Math.ceil(WORLD_HALF_LEN/step);
+      // Session 119 — floor, not ceil. Same rule as the screen branch: the
+      // last division must fall INSIDE the body, with any remainder left
+      // blank. The `continue` guard below used to be what stopped the overrun
+      // being drawn; it is now belt-and-braces rather than the mechanism.
+      var nT=Math.max(0,Math.floor(_wHL()/step));
       _ctx.font='6.5px "DM Mono",ui-monospace,monospace';
       _ctx.textAlign='center'; _ctx.textBaseline='bottom';
       for(var i=-nT;i<=nT;i++){
         var wx=i*step;
-        if(Math.abs(wx)>WORLD_HALF_LEN+0.001) continue;
+        if(Math.abs(wx)>_wHL()+0.001) continue;
         // Classify tick: major (integer unit), medium (half unit), minor
         var absWx=Math.abs(wx);
         var isUnit=Math.abs(Math.round(wx)-wx)<0.001;
@@ -20493,9 +20753,35 @@ animate();
         if(isMaj){
           var realM = Math.abs(wx) / unitsPerMetre;
           var lbl = _fmt(realM);
-          _ctx.fillStyle='rgba(70,50,15,0.8)';
-          var lx=sBaseT.x-(sBaseT.y-sTipT.y)*0.6, ly=sBaseT.y+(sBaseT.x-sTipT.x)*0.6;
-          _ctx.fillText(lbl, lx, ly);
+          // ── Session 119b: the number has to FIT, not just be anchored inside ──
+          // The tick is a line AT wx and was already bounded; the label is
+          // CENTRED on it and was not bounded at all, so at short ruler lengths
+          // the end numbers hung off both ends of the body. The screen branch
+          // got this test in 119; world mode did not, which is what was still
+          // visible on device.
+          //
+          // The test is done in RULER-LOCAL UNITS, not screen pixels. Under
+          // perspective a screen-space horizontal box test is simply wrong once
+          // the ruler is rotated or foreshortened, and px-per-unit is not
+          // constant along its length — so the conversion is measured LOCALLY,
+          // from this tick's own neighbourhood, rather than once at the origin
+          // (which would under-estimate the far end and let it overflow again).
+          var wN1 = origin.clone().addScaledVector(rulerX,wx-0.5).addScaledVector(rulerYv,topEdgeY);
+          var wN2 = origin.clone().addScaledVector(rulerX,wx+0.5).addScaledVector(rulerYv,topEdgeY);
+          var sN1 = _w2s(wN1), sN2 = _w2s(wN2);
+          var fits = true;
+          if(!sN1.behind && !sN2.behind){
+            var pxPerUnit = Math.hypot(sN2.x-sN1.x, sN2.y-sN1.y);
+            if(pxPerUnit > 0.001){
+              var halfWorld = (_ctx.measureText(lbl).width*0.5) / pxPerUnit;
+              fits = (Math.abs(wx) + halfWorld) <= _wHL();
+            }
+          }
+          if(fits){
+            _ctx.fillStyle='rgba(70,50,15,0.8)';
+            var lx=sBaseT.x-(sBaseT.y-sTipT.y)*0.6, ly=sBaseT.y+(sBaseT.x-sTipT.x)*0.6;
+            _ctx.fillText(lbl, lx, ly);
+          }
         }
       }
     }
@@ -20532,6 +20818,21 @@ animate();
     _ctx.fillStyle=_angleSnap?'rgba(80,55,15,0.75)':'rgba(0,0,0,0)';
     _ctx.strokeStyle='rgba(80,55,15,0.6)'; _ctx.lineWidth=0.9;
     _ctx.beginPath(); _ctx.arc(rot.x+Math.cos(da)*10,rot.y+Math.sin(da)*10,2,0,Math.PI*2); _ctx.fill(); _ctx.stroke();
+
+    // Scale handle (session 116). Anchored with _rLocalToWorld3, exactly as
+    // the other four shapes' scale handles are — NOT off _worldHandles(),
+    // which only knows about centre and rot.
+    var swS=_rLocalToWorld3(STR_ROT_WX,STR_SCL_WY);
+    var ssS=swS?_w2s(swS):null;
+    if(ssS&&!ssS.behind){
+      _ctx.fillStyle=_drag&&_drag.type==='scale'?'rgba(80,55,15,0.45)':'rgba(130,100,45,0.22)';
+      _ctx.strokeStyle='rgba(80,55,15,0.6)'; _ctx.lineWidth=1;
+      _ctx.beginPath(); _ctx.arc(ssS.x,ssS.y,12,0,Math.PI*2); _ctx.fill(); _ctx.stroke();
+      _ctx.fillStyle='rgba(70,50,15,0.9)';
+      _ctx.font='bold 10px "DM Mono",ui-monospace,monospace';
+      _ctx.textAlign='center'; _ctx.textBaseline='middle';
+      _ctx.fillText('\u2922',ssS.x,ssS.y+0.5);
+    }
     } // end if(!rot.behind)
 
     _ctx.restore();
@@ -20810,11 +21111,16 @@ animate();
       var cos=Math.cos(_angle), sin=Math.sin(_angle);
       var dx=sx-_cx, dy=sy-_cy;
       var lx= dx*cos+dy*sin, ly=-dx*sin+dy*cos;
-      if(Math.hypot(lx-56,ly)<=20) return 'rot';
+      // Scale before rot: the two circles are 30px apart with radii 14/20, so
+      // they overlap, and the smaller one has to win inside its own disc.
+      if(Math.hypot(lx-STR_ROT_X,ly-STR_SCL_Y)<=14) return 'scale';
+      if(Math.hypot(lx-STR_ROT_X,ly)<=20) return 'rot';
       if(Math.hypot(lx,ly)<=16)    return 'move';
     } else {
       var h=_worldHandles();
       if(!h) return null;
+      var swH=_rLocalToWorld3(STR_ROT_WX,STR_SCL_WY);
+      if(swH){ var ssH=_w2s(swH); if(Math.hypot(sx-ssH.x,sy-ssH.y)<=16) return 'scale'; }
       if(Math.hypot(sx-h.rot.screen.x, sy-h.rot.screen.y)   <= 20) return 'rot';
       if(Math.hypot(sx-h.centre.screen.x,sy-h.centre.screen.y)<=18) return 'move';
     }
@@ -20839,8 +21145,7 @@ animate();
       var cos=Math.cos(_angle), sin=Math.sin(_angle);
       var dx=sx-_cx, dy=sy-_cy;
       var lx= dx*cos+dy*sin, ly=-dx*sin+dy*cos;
-      var hw=Math.max(window.innerWidth,window.innerHeight)*0.65;
-      return Math.abs(lx)<=hw && Math.abs(ly)<=BODY_H*0.5+14;
+      return Math.abs(lx)<=_sHW() && Math.abs(ly)<=BODY_H*0.5+14;
     } else {
       // Check if near the ruler — inside quad OR within 20px of top/bottom edge
       var c=_worldCorners(); if(!c) return false;
@@ -20914,6 +21219,12 @@ animate();
       if(h==='scale'){
         var dsc=_shapeDesc(_rulerType);
         if(dsc&&dsc.scaleHandle) scaleBase=Math.hypot(dsc.scaleHandle.x,dsc.scaleHandle.y)/_shapeScale;
+        // 'straight' has no descriptor, and its handle sits at a FIXED local
+        // offset rather than one that grows with the tool — so the handle's own
+        // distance is not a usable baseline. Measure from the touch point
+        // instead, which makes the drag purely relative (move twice as far from
+        // centre, get twice the size) and needs no change in _onCaptureMove.
+        else scaleBase=Math.max(1,Math.hypot(sx-_cx,sy-_cy))/_shapeScale;
       }
       _drag={type:h,pointerId:e.pointerId||0,
              startX:sx,startY:sy,origCx:_cx,origCy:_cy,origAngle:_angle,
@@ -20933,6 +21244,9 @@ animate();
           var sw3=_rLocalToWorld3(dsc2.scaleHandle.x,dsc2.scaleHandle.y);
           var ss3=sw3?_w2s(sw3):null;
           if(ss3) scaleBaseW=Math.hypot(ss3.x-cenScreen.x,ss3.y-cenScreen.y)/_shapeScale;
+        } else {
+          // 'straight' — same relative-from-touch-point baseline as screen mode.
+          scaleBaseW=Math.max(1,Math.hypot(sx-cenScreen.x,sy-cenScreen.y))/_shapeScale;
         }
       }
       _drag={type:h,pointerId:e.pointerId||0,
@@ -21038,7 +21352,35 @@ animate();
     e.preventDefault(); e.stopImmediatePropagation();
     // Check if this was a tap on the rotate handle
     var wasTap = _drag.wasTap && _drag.type==='rot';
+    // ── Double-tap the scale handle = back to default size (session 119b) ──
+    // Applies to all five shapes; _shapeScale and the handle are both shared.
+    //
+    // Detected HERE, on release, using the existing _drag.wasTap flag that
+    // _onCaptureMove clears after 5px of travel — NOT on the pointerdown of
+    // the second contact. Down-side detection was tried first and is wrong:
+    // the handle's whole purpose is dragging, and two quick successive size
+    // adjustments would then be read as a double-tap and reset the thing the
+    // user was in the middle of setting. Requiring both contacts to have been
+    // genuine taps is what makes the gesture safe to put on a drag handle.
+    //
+    // No deferred single-tap timer (unlike the rotate handle, which has one
+    // because a lone tap there toggles the angle readout): a lone tap on the
+    // scale handle does nothing, so there is nothing to defer.
+    var wasSclTap = _drag.wasTap && _drag.type==='scale';
     _drag=null;
+    if(wasSclTap){
+      var nowS=Date.now();
+      if(nowS-_sclLastTap<ROT_DBL_MS){
+        _sclLastTap=0;                  // consumed — a third tap starts a new pair
+        if(_shapeScale!==1.0){
+          _shapeScale=1.0;
+          toast('Ruler size reset');
+          _draw();
+        }
+      } else {
+        _sclLastTap=nowS;
+      }
+    }
     if(wasTap){
       var now=Date.now();
       if(now-_rotLastTap<ROT_DBL_MS){
@@ -21111,9 +21453,8 @@ animate();
       var sinA=Math.sin(_angle),cosA=Math.cos(_angle);
       var dx=screenX-_cx, dy=screenY-_cy;
       var distToCenter=dx*(-sinA)+dy*cosA;
-      var hw=Math.max(window.innerWidth,window.innerHeight)*0.65;
       var lx=dx*cosA+dy*sinA;
-      var insideBody=Math.abs(distToCenter)<BODY_H*0.5&&Math.abs(lx)<hw;
+      var insideBody=Math.abs(distToCenter)<BODY_H*0.5&&Math.abs(lx)<_sHW();
       var nearEdge=Math.abs(Math.abs(distToCenter)-BODY_H*0.5)<=SNAP_PX;
       return insideBody&&!nearEdge;
     } else {
@@ -21197,6 +21538,12 @@ animate();
       var ex=_cx+eo*(-sinA),ey=_cy+eo*(cosA);
       var ddx=screenX-ex,ddy=screenY-ey;
       var along=ddx*cosA+ddy*sinA;
+      // Session 116: clamp to the tool's own ends. The snap line used to run
+      // to infinity, which was invisible only because the ruler was always
+      // longer than the screen; at _shapeScale 0.4 it is not, and a stroke
+      // could be constrained by a ruler it had run off. World mode already
+      // clamped (t2 on the corner-derived edge).
+      var _ahw=_sHW(); along=Math.max(-_ahw,Math.min(_ahw,along));
       var res2=s2w(ex+along*cosA,ey+along*sinA);
       if(res2){ _rulerLastPt=res2.clone(); return res2; }
       return _rulerLastPt?_rulerLastPt.clone():null;
@@ -21340,6 +21687,8 @@ animate();
       e.stopPropagation();
       // Position popover below arrow
       var r=arrow.getBoundingClientRect();
+      // Before the toggle — see the matching note on #bsym-arrow.
+      if(!pop.classList.contains('open')&&window._closeTopbarMenus)window._closeTopbarMenus('ruler-pop');
       pop.classList.toggle('open');
       if(!(window._uwPlacePop&&window._uwPlacePop(pop,arrow))){
         pop.style.top=(r.bottom+4)+'px';
