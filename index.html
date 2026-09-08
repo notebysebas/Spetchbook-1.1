@@ -865,13 +865,20 @@ body.ui-hidden #views.recording-open{display:flex!important;bottom:0}
 #tb-lrow7{border-top:1px solid var(--bdr);margin-top:2px;padding-top:6px}
 
 /* ── EXPORT MENU ── */
+/* Session 115: #expmenu is placed by the SAME helper as every other popover
+   (_uwPlacePop in ultra-wide, the capped fallback in #bfile's handler
+   otherwise). The top/right literals below are only the pre-first-open
+   resting position — every open writes left/top inline. .emb now carries
+   .vp-row's exact metrics; the two menus used to differ by 1px of padding and
+   2px of horizontal padding for no reason anyone recorded. */
 #expmenu{position:fixed;top:50px;right:44px;z-index:300;background:var(--pan);border:1px solid var(--bdr);
-  border-radius:9px;padding:6px 5px;box-shadow:0 3px 14px rgba(0,0,0,.1);display:none;flex-direction:column;
-  gap:2px;min-width:130px;backdrop-filter:blur(12px);transform-origin:top right}
+  border-radius:9px;padding:6px 5px;box-shadow:0 4px 16px rgba(0,0,0,.1);display:none;flex-direction:column;
+  gap:2px;min-width:140px;backdrop-filter:blur(12px);transform-origin:top right}
 #expmenu.vis{display:flex}
 body.rside #expmenu{right:auto;left:44px;transform-origin:top left}
-.emb{padding:8px 12px;border-radius:5px;border:none;background:transparent;color:var(--ink);
-  font-family:'DM Mono',monospace;font-size:8.5px;cursor:pointer;text-align:left;transition:all .1s}
+.emb{display:flex;align-items:center;gap:6px;padding:7px 10px;border-radius:5px;
+  cursor:pointer;transition:background .08s;border:none;background:transparent;
+  color:var(--ink);font-family:'DM Mono',monospace;font-size:8.5px;text-align:left;width:100%}
 .emb:hover,.emb.hover{background:rgba(var(--ink-r),var(--ink-g),var(--ink-b),.07)}
 .emsep{height:1px;background:var(--bdr);margin:2px 0}
 
@@ -1682,12 +1689,14 @@ body.uw-mode:not(.ui-hidden) #bhide{display:none!important}
 body.uw-mode #view-pop,body.uw-mode #ruler-pop,body.uw-mode #sym-pop,
 body.uw-mode #layers-pop,body.uw-mode #prims-pop,body.uw-mode #scale-pop,
 body.uw-mode #sz-pop,body.uw-mode #op-pop,body.uw-mode #bgpop,
+body.uw-mode #sm-pop,body.uw-mode #expmenu,
 body.uw-mode .cyc-pop{overflow-y:auto;overscroll-behavior:contain}
 /* The scroll container must be the rounded box itself, so the last row clips
    to the corner radius instead of running square to the box edge. */
 body.uw-mode #view-pop,body.uw-mode #ruler-pop,body.uw-mode #sym-pop,
 body.uw-mode #layers-pop,body.uw-mode #prims-pop,body.uw-mode #scale-pop,
 body.uw-mode #sz-pop,body.uw-mode #op-pop,body.uw-mode #bgpop,
+body.uw-mode #sm-pop,body.uw-mode #expmenu,
 body.uw-mode .cyc-pop{border-radius:9px}
 
 /* #views is a full-bleed bottom slab in the other two modes, which in
@@ -2061,6 +2070,23 @@ body.uw-mode:not(.ui-hidden) #bprims{display:none!important}
   </div>
   <div class="brush-slider-row">
     <input type="range" id="op-sld" min="10" max="100" value="95">
+  </div>
+</div>
+
+<!-- Smoothing strength popover — LONG-PRESS any smoothing button (session 115).
+     No preview canvas: the thing being adjusted is the shape of a stroke you
+     have not drawn yet, and a 120x32 squiggle would be a decoration rather
+     than a preview. The read-out is the number. -->
+<div id="sm-pop" class="brush-pop">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:0 2px">
+    <span style="font-size:6px;color:var(--mut);letter-spacing:.06em">SMOOTHING</span>
+    <span id="sm-val" style="font-size:7.5px;color:var(--ink)">0</span>
+  </div>
+  <div class="brush-slider-row">
+    <input type="range" id="sm-sld" min="0" max="100" value="0">
+  </div>
+  <div style="display:flex;justify-content:space-between;padding:0 3px;font-size:5.5px;color:var(--mut)">
+    <span>MIN</span><span>LINE</span>
   </div>
 </div>
 
@@ -3410,7 +3436,7 @@ let curPlane='xz',surfType='plane';
 const surfPos=new THREE.Vector3(),surfEuler=new THREE.Euler(0,0,0,'XYZ');
 let surfScale=2.0;const surfScaleAxes=new THREE.Vector3(1,1,1);
 const surfGroup=new THREE.Group();scene.add(surfGroup);
-let surfMesh=null,surfFillMat=null,surfWireMat=null,isHovering=false;
+let surfMesh=null,surfFillMat=null,surfWireMat=null;
 let _frostedMat=null,_frostedMesh=null;
 let _frostedGridMat=null,_frostedGridMesh=null;
 // depthCuesOn declared early — buildSurf references it (TDZ safety)
@@ -3485,7 +3511,10 @@ function buildSurf(){
   surfFillMat=new THREE.MeshStandardMaterial({color:tint,transparent:true,opacity:.16,side:THREE.DoubleSide,depthWrite:false,roughness:.9});
   surfMesh=new THREE.Mesh(geo,surfFillMat);surfMesh.renderOrder=7;surfGroup.add(surfMesh);
   const wgeo=new THREE.EdgesGeometry(geo,15);
-  surfWireMat=new THREE.LineBasicMaterial({color:tint,transparent:true,opacity:.55,depthWrite:false});
+  // Session 115: .28 is now the ONE opacity this material ever has. It used to
+  // be built at .55 and rewritten to .38/.16 (fill) and .5/.28 (wire) by
+  // setSurfHover(), which is gone — see gotchas.md Critical Rule #115(a).
+  surfWireMat=new THREE.LineBasicMaterial({color:tint,transparent:true,opacity:.28,depthWrite:false});
   const wire=new THREE.LineSegments(wgeo,surfWireMat);wire.renderOrder=8;surfGroup.add(wire);
   if(surfType==='plane'){const h=5,ep=[new THREE.Vector3(-h,-h,0),new THREE.Vector3(h,-h,0),new THREE.Vector3(h,-h,0),new THREE.Vector3(h,h,0),new THREE.Vector3(h,h,0),new THREE.Vector3(-h,h,0),new THREE.Vector3(-h,h,0),new THREE.Vector3(-h,-h,0)];const borderLine=new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(ep),new THREE.LineBasicMaterial({color:tint,transparent:true,opacity:1,depthWrite:false}));borderLine.renderOrder=8;surfGroup.add(borderLine);}
   // Frosted tint mesh (renderOrder 5): bg-colour semi-transparent plane, depthTest:true
@@ -3555,7 +3584,6 @@ function syncSurf(){
   // Reposition scale cage when surface moves
   syncScaleCage();
 }
-function setSurfHover(on){if(!surfFillMat||!surfWireMat||on===isHovering)return;isHovering=on;surfFillMat.opacity=on?.38:.16;surfWireMat.opacity=on?.5:.28;}
 buildSurf();
 
 // ================================================================
@@ -4965,34 +4993,13 @@ function s2w(px,py){
   var shits=drawRC.intersectObject(surfMesh,false);surfMesh.material.side=prev;
   return shits.length?shits[0].point.clone():null;
 }
-const hoverRC=new THREE.Raycaster();
-function checkHover(px,py){
-  var r=_cachedRect;
-  var ndcX=((px-r.left)/r.width)*2-1, ndcY=-((py-r.top)/r.height)*2+1;
-  var ndc=new THREE.Vector2(ndcX,ndcY);
-  if(_fpsMode&&_fpsSurfMode===1&&_fpsPlaneFill){
-    hoverRC.setFromCamera(ndc,activeCam());
-    _fpsPlaneFill.material.side=THREE.DoubleSide;
-    var fhits=hoverRC.intersectObject(_fpsPlaneFill,false);
-    return fhits.length>0;
-  }
-  // Prims-as-plane mode: hover check against prim meshes
-  if(window._primsAsPlane && window._primRaycast){
-    hoverRC.setFromCamera(ndc,activeCam());
-    var ph=window._primRaycast(hoverRC);
-    return ph !== null;
-  }
-  if(!surfMesh)return false;
-  if(surfType==='none')return false;
-  if(surfType==='loft'&&!window._loftGeo)return false;
-  hoverRC.setFromCamera(ndc,activeCam());
-  // Must use the same test as s2w or hover reports "off surface" in exactly the
-  // region where drawing now works.
-  if(surfType==='plane')return _planeExtHit(hoverRC)!==null;
-  var prev=surfMesh.material.side;surfMesh.material.side=THREE.DoubleSide;
-  var shits=hoverRC.intersectObject(surfMesh,false);surfMesh.material.side=prev;
-  return shits.length>0;
-}
+// checkHover()/hoverRC/setSurfHover() lived here until session 115 and are
+// deliberately gone. See gotchas.md Critical Rule #115(a): the hover tint was
+// a LATCH, not a hover — nothing cleared it at the end of a touch gesture, so
+// a pinch or a two-finger pan that began with a finger over the plane left the
+// surface fill stuck at .38 until the next stroke. It also cost a full
+// raycast on every pointermove in draw mode. The surface now has exactly one
+// appearance in every state, which is what was asked for.
 
 // ── Depth system — frosted glass (v5.6) ──────────────────────────
 // Depth cue is now the _frostedMesh in surfGroup. No per-vertex recoloring.
@@ -5322,6 +5329,83 @@ let prevDrawMode='draw'; // tracks last draw/erase/select mode for returning fro
 let curColor='#000000',brushSz=1,brushOp=.95;
 let isDrawing=false,rawPts=[],smoothPts=[],velHistory=[],lazyPos=null;
 const LAZY_ON=.18,LAZY_OFF=1.0;let smoothingOn=false,LAZY=LAZY_OFF;
+// ── Smoothing STRENGTH (session 115) ─────────────────────────────────────
+// 0..100. Applied ONCE, in finStroke(), to the committed polyline — never per
+// pointermove. The live preview is still the lazy-lerp leash below; the stroke
+// settles to its smoothed shape when you lift. That is a real behavioural
+// property, not an implementation detail: at 240Hz a 40-pass diffusion over a
+// 500-point stroke on every move is ~6M vector ops a second.
+//
+// WHY NOT JUST LOWER LAZY_ON. It cannot produce the top end that was asked
+// for. LAZY_ON is the lerp factor of a leash — driving it to 0 does not
+// straighten the stroke, it stops the point following your finger at all, and
+// you get a stub. The two ends named ("minimal" and "a straight line") are not
+// the two ends of that dial. They ARE the two ends of the pass below.
+var smoothAmt=0;
+var SM_MAX_PASSES=40;
+var _smBuf=null;
+// Two stages, both with the endpoints PINNED, so the stroke always starts and
+// ends exactly where the pen did at every setting.
+//
+//   1. Laplacian diffusion, `w * SM_MAX_PASSES` passes. Jacobi (write to a
+//      scratch buffer, copy back) — an in-place Gauss-Seidel sweep smooths
+//      asymmetrically along the direction of iteration and puts a visible
+//      drift in the tail of long strokes.
+//   2. A blend toward the straight chord between the endpoints, weighted w^3.
+//      Diffusion ALONE cannot reach a straight line in any affordable number
+//      of passes — full straightening needs O(N^2) of them, ~180,000 for a
+//      300-point stroke. The chord blend gets there in one O(N) pass, and w^3
+//      keeps it out of the way at low settings: 1.6% at 25, 12.5% at 50,
+//      exactly 1.0 at 100.
+//
+// The consequence, stated rather than discovered later: because the top of the
+// range IS a straight line, high settings flatten curves you meant to draw.
+// That is inherent to any monotone dial with a line at one end. A closed shape
+// (start ~ end) collapses toward a point at 100, for the same reason.
+//
+// Parameterisation for stage 2 comes from the ORIGINAL arc length, measured
+// before stage 1 moves anything — the chord must preserve the spacing that was
+// drawn, not the spacing 40 passes of diffusion left behind.
+function _applySmoothAmt(pts,amt){
+  var n=pts.length;
+  if(!(amt>0)||n<3)return pts;
+  var w=Math.max(0,Math.min(1,amt/100));
+  var t=new Array(n),acc=0,i;
+  t[0]=0;
+  for(i=1;i<n;i++){acc+=pts[i].distanceTo(pts[i-1]);t[i]=acc;}
+  if(acc>1e-9){for(i=1;i<n;i++)t[i]=t[i]/acc;}
+  else{for(i=1;i<n;i++)t[i]=i/(n-1);}
+  // Passes are scaled by (1 - kb) as well as by w. At the top of the range kb
+  // is 1, so the chord blend below OVERWRITES the diffusion result completely
+  // — running 40 passes first and then discarding every one of them was the
+  // most expensive no-op in the function. Peak pass count is now ~19, at
+  // w≈0.63, and the worst case measured 7.15ms → 3.4ms for a 500-point stroke.
+  var kb=w*w*w;
+  var passes=Math.round(w*(1-kb)*SM_MAX_PASSES);
+  if(passes>0){
+    if(!_smBuf||_smBuf.length<n*3)_smBuf=new Array(n*3);
+    for(var pss=0;pss<passes;pss++){
+      for(var j=1;j<n-1;j++){
+        var a=pts[j-1],b=pts[j],c=pts[j+1],o=j*3;
+        _smBuf[o]  =(a.x+2*b.x+c.x)*0.25;
+        _smBuf[o+1]=(a.y+2*b.y+c.y)*0.25;
+        _smBuf[o+2]=(a.z+2*b.z+c.z)*0.25;
+      }
+      for(var k=1;k<n-1;k++){var ko=k*3;pts[k].set(_smBuf[ko],_smBuf[ko+1],_smBuf[ko+2]);}
+    }
+  }
+  if(kb>1e-4){
+    var p0=pts[0],p1=pts[n-1];
+    var dx=p1.x-p0.x,dy=p1.y-p0.y,dz=p1.z-p0.z;
+    for(var m=1;m<n-1;m++){
+      var q=pts[m],tm=t[m];
+      q.set(q.x+((p0.x+dx*tm)-q.x)*kb,
+            q.y+((p0.y+dy*tm)-q.y)*kb,
+            q.z+((p0.z+dz*tm)-q.z)*kb);
+    }
+  }
+  return pts;
+}
 
 // Layers
 // Layers declared below in layer system section
@@ -5589,6 +5673,15 @@ function finStroke(){
       else{break;}
     }
   }
+  // Smoothing strength (session 115). AFTER the hook trim — trimming a tail
+  // that diffusion has already pulled into line would find nothing to trim —
+  // and BEFORE computeVels, so the velocity taper follows the shape that
+  // actually ships rather than the raw one.
+  //
+  // Skipped entirely while the ruler is on. A ruler-constrained stroke is
+  // already exactly on a line or an arc; the chord blend would pull an arc
+  // toward its own chord, which is the one place this pass can only do harm.
+  if(smoothingOn&&smoothAmt>0&&!(window._rulerIsOn&&window._rulerIsOn()))_applySmoothAmt(pts,smoothAmt);
   const vels=computeVels(pts);
   const g=new THREE.Group();
   const tube=buildTube(pts,vels,curColor,brushSz,brushOp,flatBrush);if(tube)g.add(tube);
@@ -6357,7 +6450,8 @@ function _savePrefs(){
     localStorage.setItem('sk3d_prefs',JSON.stringify({
       stylusOnly:stylusOnly,twoFingerMode:twoFingerMode,
       invertOrbitX:invertOrbitX,uiTheme:_uiTheme,
-      tapGest:_mtTapGest,fileName:_lastFileName
+      tapGest:_mtTapGest,fileName:_lastFileName,
+      smoothAmt:smoothAmt
     }));
   }catch(ex){}
 }
@@ -6375,6 +6469,12 @@ function _loadPrefs(){
     if(typeof p.tapGest==='boolean')_mtTapGest=p.tapGest;
     else if(typeof p.tapUndo==='boolean')_mtTapGest=p.tapUndo;
     if(typeof p.fileName==='string'&&p.fileName)_lastFileName=p.fileName;
+    // Strength persists; smoothingOn itself stays session-only, matching what
+    // it already did (newScene() clears it). sk3d_prefs carries no version
+    // field, so an older blob simply leaves smoothAmt at its default of 0 —
+    // which is the current behaviour exactly, so nobody's strokes change shape
+    // on first load after this deploy.
+    if(typeof p.smoothAmt==='number'&&isFinite(p.smoothAmt))smoothAmt=Math.max(0,Math.min(100,p.smoothAmt));
     if(p.uiTheme)setUITheme(p.uiTheme);
   }catch(ex){}
 }
@@ -7090,7 +7190,7 @@ function onDown(e){
     if(window._rulerBlocksPt && window._rulerBlocksPt(p.x, p.y)) { cancelDraw(); return; }
     // Record which finger is drawing so ppos() tracks the right one if indices shift
     if(e.touches&&e.touches.length>0)_drawTouchId=e.touches[0].identifier;
-    isDrawing=true;setSurfHover(false);rawPts=[pt];smoothPts=[pt];velHistory=[0];lazyPos=pt.clone();updPrev(smoothPts);
+    isDrawing=true;rawPts=[pt];smoothPts=[pt];velHistory=[0];lazyPos=pt.clone();updPrev(smoothPts);
     if(window._hideGviewSlider)window._hideGviewSlider();
   }
 }
@@ -7161,13 +7261,6 @@ function onMove(e){
       else if(cam.active){const mx=(e.touches[0].clientX+e.touches[1].clientX+e.touches[2].clientX)/3,my=(e.touches[0].clientY+e.touches[1].clientY+e.touches[2].clientY)/3;cam.theta=cam.st+_orbX(mx-cam.sx)*.013;cam.phi=Math.max(.05,Math.min(Math.PI-.05,cam.sp-(my-cam.sy)*.013));updCam();}
     }
     return;
-  }
-  if(mode==='draw'&&!isDrawing&&!cam.active&&!cam.panActive){
-    // Only raycast hover when pointer is actually over the canvas, not UI elements above it
-    var _hr=_cachedRect;
-    if(p.x>=_hr.left&&p.x<=_hr.right&&p.y>=_hr.top&&p.y<=_hr.bottom){
-      setSurfHover(checkHover(p.x,p.y));
-    }
   }
   if(cam.panActive){doPan(e);return;}
   if(cam.active){doOrbit(e);return;}
@@ -7471,7 +7564,6 @@ function isSyntheticMouse(){return Date.now()-lastTouchTime<500;}
 renderer.domElement.addEventListener('mousedown',e=>{if(!isSyntheticMouse())onDown(e);});
 renderer.domElement.addEventListener('mousemove',e=>{if(!isSyntheticMouse())onMove(e);});
 renderer.domElement.addEventListener('mouseup',  e=>{if(!isSyntheticMouse())onUp(e);});
-renderer.domElement.addEventListener('mouseleave',function(){if(!isSyntheticMouse())setSurfHover(false);});
 renderer.domElement.addEventListener('wheel',e=>{
   e.preventDefault();
   if(e.ctrlKey) return;
@@ -7694,6 +7786,34 @@ function addPage(){
     _fbRefresh();
     if(_fbIdx!==curPage)_fbGo(curPage);else{_fbSetStatic(curPage);_fbSyncMeta();}
   }
+  toast('Page '+(curPage+1));
+}
+// Session 115: long-pressing the flipbook page inserts a blank page AFTER the
+// one under the finger, rather than appending like #fb-add does.
+//
+// The ordering here is load-bearing. saveCurPage() writes into pages[curPage]
+// and MUST run before the splice, because splicing at or below curPage shifts
+// that index out from under it. curPage is then set to the new page
+// unconditionally, so there is no stale index left to correct.
+function insertPageAfter(idx){
+  if(pages.length>=FB_MAX_PAGES){toast('Page limit reached ('+FB_MAX_PAGES+')');_fbSyncAdd();return;}
+  saveCurPage();clearAll();if(window._clearAllPrimitives)window._clearAllPrimitives();
+  var at=Math.max(0,Math.min((idx|0)+1,pages.length));
+  pages.splice(at,0,{strokes:[],thumb:null,preview:null,primitives:[]});
+  curPage=at;
+  refreshPageStrip();
+  if(_fbOpen){
+    _fbEnsureShots(curPage);
+    // _fbIdx is an index into the SAME array the splice just shifted. If it
+    // sat at or after the insertion point it now names the wrong page, and
+    // _fbGo would animate a turn between two wrong endpoints.
+    if(_fbIdx>=at)_fbIdx++;
+    if(_pgEditIdx>=at)_pgEditIdx=-1;
+    _fbRefresh();
+    if(_fbIdx!==curPage)_fbGo(curPage);
+    else{_fbSetStatic(curPage);_fbSyncMeta();}
+  }
+  markDirty();
   toast('Page '+(curPage+1));
 }
 function deletePage(idx){
@@ -8445,8 +8565,17 @@ function _fbCommit(){
   if(t!==curPage)loadPage(t);
 }
 
-// Kept as togglePages(): the keyboard 'n' shortcut and both page buttons
+// Kept as togglePages(): the keyboard 'n' shortcut and the page button
 // already route through this name.
+//
+// Session 115a: this comment said "both page buttons" and had been stale since
+// session 108, which deleted the narrow bar's duplicate. There is now exactly
+// ONE page button — #pgbtn — and exactly two callers of this function, the one
+// below and the 'n' key. #topbar carries no narrow-mode hide rule (only the
+// #bhide / tb-hidden user toggle), so #pgbtn is the visible pages button in
+// TALL and WIDE mode as it stands; in ultra-wide _uwAdopt() reparents #topbar
+// bodily into #sidecol-uw, so the column's button is the same DOM node. All
+// three modes, one element, one wiring.
 function togglePages(){if(_fbOpen)closeFlipbook();else openFlipbook();}
 
 (function(){
@@ -8477,6 +8606,12 @@ function togglePages(){if(_fbOpen)closeFlipbook();else openFlipbook();}
   var _pDown=false,_pX=0,_pY=0,_pMoved=false,_pNoDrag=false;
   var _pLastX=0,_pLastT=0,_pVel=0;
   var TAP_PX=8;   // FB_DRAG_LOCK_PX must stay above this — see its comment
+  // Long-press to insert a page after this one (session 115). 500ms matches
+  // the scrub bar's edit-mode press and the views strip, so every long press
+  // in the app costs the same wait.
+  var _pLong=null,_pLongFired=false;
+  var PG_LONG_MS=500;
+  function _pCancelLong(){if(_pLong){clearTimeout(_pLong);_pLong=null;}}
   page.addEventListener('pointerdown',function(e){
     _pDown=true;_pX=e.clientX;_pY=e.clientY;_pMoved=false;
     // A turn already in flight owns the leaf. Tap-to-exit still works during
@@ -8484,11 +8619,21 @@ function togglePages(){if(_fbOpen)closeFlipbook();else openFlipbook();}
     _pNoDrag=_fbAnim;
     _pLastX=e.clientX;_pLastT=(e.timeStamp||Date.now());_pVel=0;
     try{page.setPointerCapture(e.pointerId);}catch(ex){}
+    _pLongFired=false;_pCancelLong();
+    // Not while a turn is flying (the index under the finger is in motion) and
+    // not in edit mode, where a press on the page already means "leave edit
+    // mode" — same carve-out the scrub bar makes at its own long press.
+    if(!_fbAnim&&!_pgEditMode){
+      _pLong=setTimeout(function(){
+        _pLong=null;_pLongFired=true;
+        insertPageAfter(_fbIdx);
+      },PG_LONG_MS);
+    }
   });
   page.addEventListener('pointermove',function(e){
     if(!_pDown)return;
     var dx=e.clientX-_pX,dy=e.clientY-_pY;
-    if(Math.abs(dx)>TAP_PX||Math.abs(dy)>TAP_PX)_pMoved=true;
+    if(Math.abs(dx)>TAP_PX||Math.abs(dy)>TAP_PX){_pMoved=true;_pCancelLong();}
     var now=(e.timeStamp||Date.now());
     if(now>_pLastT){
       _pVel=(e.clientX-_pLastX)/(now-_pLastT);
@@ -8508,7 +8653,12 @@ function togglePages(){if(_fbOpen)closeFlipbook();else openFlipbook();}
   function pageUp(e){
     if(!_pDown)return;
     _pDown=false;
+    _pCancelLong();
     try{page.releasePointerCapture(e.pointerId);}catch(ex){}
+    // A fired long press has already done its work and moved the book to a new
+    // page. Falling through to _fbCommit() here would close the flipbook on
+    // the lift, which reads as the app exiting by itself.
+    if(_pLongFired){_pLongFired=false;return;}
     if(_fbDrag){_fbDragRelease(e.clientX-_pX,_pVel);return;}
     if(_pMoved)return;
     if(_pgEditMode){setPgEditMode(false);return;}
@@ -8516,7 +8666,7 @@ function togglePages(){if(_fbOpen)closeFlipbook();else openFlipbook();}
   }
   page.addEventListener('pointerup',pageUp);
   page.addEventListener('pointercancel',function(){
-    _pDown=false;
+    _pDown=false;_pCancelLong();_pLongFired=false;
     // Same release rule as a normal lift, minus the velocity: a cancel at
     // 160° should still land, not snap back.
     if(_fbDrag)_fbDragRelease(_pLastX-_pX,0);
@@ -8607,6 +8757,45 @@ function togglePages(){if(_fbOpen)closeFlipbook();else openFlipbook();}
 
 pages.push({strokes:[],thumb:null,preview:null,primitives:[]});
 
+// ── #pgbtn: tap toggles the flipbook, long-press inserts a page (session 115a) ──
+// There is only ONE page button in the app. #pgbtn lives in #topbar, and in
+// ultra-wide _uwAdopt() reparents #topbar into #sidecol-uw — so the same
+// element serves the toolbar and the column and this wiring covers both.
+// (#pb-pgbtn is looked up in four places but does not exist in the markup;
+// those are dead defensive reads, left alone this session.)
+//
+// Registered BEFORE the click handler below: the suppressor uses
+// stopImmediatePropagation, which only reaches listeners registered after it
+// on the same element.
+(function(){
+  var btn=document.getElementById('pgbtn');
+  if(!btn)return;
+  var PG_BTN_LONG_MS=500;   // same wait as #fb-page, the scrub bar and #views
+  var _t=null,_long=false,_sx=0,_sy=0;
+  function cancel(){if(_t){clearTimeout(_t);_t=null;}}
+  btn.addEventListener('pointerdown',function(e){
+    _long=false;_sx=e.clientX;_sy=e.clientY;cancel();
+    _t=setTimeout(function(){
+      _t=null;_long=true;
+      // Insert after whatever page is being LOOKED at, which is _fbIdx while
+      // the flipbook is open and curPage otherwise. Matches the long press on
+      // #fb-page rather than appending like #fb-add does.
+      insertPageAfter(_fbOpen?_fbIdx:curPage);
+    },PG_BTN_LONG_MS);
+  });
+  // A finger that slides off is a scroll, not a press.
+  btn.addEventListener('pointermove',function(e){
+    if(_t&&(Math.abs(e.clientX-_sx)>8||Math.abs(e.clientY-_sy)>8))cancel();
+  });
+  btn.addEventListener('pointerup',cancel);
+  btn.addEventListener('pointercancel',function(){cancel();_long=false;});
+  btn.addEventListener('pointerleave',cancel);
+  btn.addEventListener('click',function(e){
+    // Without this the lift falls through to togglePages() and the flipbook
+    // opens (or closes) on top of the page that was just inserted.
+    if(_long){_long=false;e.stopImmediatePropagation();e.preventDefault();}
+  });
+})();
 document.getElementById('pgbtn').addEventListener('click',togglePages);
 
 // ── Saved Views ───────────────────────────────────────────────────
@@ -15536,6 +15725,46 @@ document.getElementById('pb-select').addEventListener('click',function(){setMode
 document.getElementById('sflat').addEventListener('click',function(){flatBrush=!flatBrush;this.classList.toggle('on',flatBrush);var pb=document.getElementById('pb-flat');if(pb)pb.classList.toggle('on',flatBrush);var scx=document.getElementById('scx-flat');if(scx)scx.classList.toggle('on',flatBrush);var uw=document.getElementById('uw-flat');if(uw)uw.classList.toggle('on',flatBrush);toast(flatBrush?'Marker brush':'Round brush');});
 document.getElementById('pb-flat').addEventListener('click',()=>document.getElementById('sflat').click());
 
+// ── Smoothing strength: long-press any smoothing button (session 115) ──
+// Registered BEFORE the tap handler below, and before the -pb/-scx/-uw
+// delegates, because the click suppressor uses stopImmediatePropagation and
+// that only reaches listeners registered AFTER it on the same element.
+//
+// Each of the four buttons is wired to ITSELF as the popover anchor rather
+// than delegating to #ssmooth — the same lesson as Critical Rule #115(c).
+// Tap still toggles smoothing on/off; only the long press is new.
+(function(){
+  var SM_LONG_MS=450;
+  ['ssmooth','pb-smooth','scx-smooth','uw-smooth'].forEach(function(id){
+    var btn=document.getElementById(id);
+    if(!btn)return;
+    var _t=null,_long=false,_sx=0,_sy=0;
+    function cancel(){if(_t){clearTimeout(_t);_t=null;}}
+    btn.addEventListener('pointerdown',function(e){
+      _long=false;_sx=e.clientX;_sy=e.clientY;
+      cancel();
+      var self=this;
+      _t=setTimeout(function(){
+        _t=null;_long=true;
+        // Turning smoothing ON is implied by reaching for its strength — a
+        // slider that silently does nothing because the toggle is off is the
+        // kind of dead control this file has been bitten by before.
+        if(!smoothingOn){var sb=document.getElementById('ssmooth');if(sb)sb.click();}
+        if(window._openSmoothPop)window._openSmoothPop(self);
+      },SM_LONG_MS);
+    });
+    // A finger that slides off is a scroll, not a press.
+    btn.addEventListener('pointermove',function(e){
+      if(_t&&(Math.abs(e.clientX-_sx)>8||Math.abs(e.clientY-_sy)>8))cancel();
+    });
+    btn.addEventListener('pointerup',cancel);
+    btn.addEventListener('pointercancel',function(){cancel();_long=false;});
+    btn.addEventListener('pointerleave',cancel);
+    btn.addEventListener('click',function(e){
+      if(_long){_long=false;e.stopImmediatePropagation();e.preventDefault();}
+    });
+  });
+})();
 document.getElementById('ssmooth').addEventListener('click',function(){smoothingOn=!smoothingOn;LAZY=smoothingOn?LAZY_ON:LAZY_OFF;this.classList.toggle('on',smoothingOn);var pb=document.getElementById('pb-smooth');if(pb)pb.classList.toggle('on',smoothingOn);var scx=document.getElementById('scx-smooth');if(scx)scx.classList.toggle('on',smoothingOn);var uw=document.getElementById('uw-smooth');if(uw)uw.classList.toggle('on',smoothingOn);toast(smoothingOn?'Smoothing on':'Raw tracking');});
 document.getElementById('pb-smooth').addEventListener('click',()=>document.getElementById('ssmooth').click());
 
@@ -15555,8 +15784,9 @@ document.getElementById('pb-vel').addEventListener('click',()=>document.getEleme
   // Mode buttons → delegate to sidecol equivalents
   var pairs=[['scx-draw','sdraw'],['scx-select','sselect'],
              ['scx-flat','sflat'],['scx-smooth','ssmooth'],['scx-vel','svel'],
-             ['scx-undo','s-undo'],['scx-redo','s-redo'],
-             ['sz-trig-scx','sz-trig-sb'],['op-trig-scx','op-trig-sb']];
+             ['scx-undo','s-undo'],['scx-redo','s-redo']];
+  // sz-trig-scx / op-trig-scx are NOT in this table any more (session 115).
+  // They are wired directly, anchored to themselves — see Critical Rule #115(c).
   pairs.forEach(function(p){
     var src=document.getElementById(p[0]),tgt=document.getElementById(p[1]);
     if(src&&tgt)src.addEventListener('click',function(e){e.stopPropagation();tgt.click();});
@@ -15775,7 +16005,7 @@ document.getElementById('pb-vel').addEventListener('click',()=>document.getEleme
       // _uwPlacePop writes max-height/overflow inline; those must not survive
       // into narrow or wide mode, where the popovers size themselves.
       document.querySelectorAll('#view-pop,#ruler-pop,#sym-pop,#layers-pop,'+
-        '#prims-pop,#scale-pop,#sz-pop,#op-pop,#bgpop,.cyc-pop')
+        '#prims-pop,#scale-pop,#sz-pop,#op-pop,#sm-pop,#bgpop,#expmenu,.cyc-pop')
         .forEach(function(q){q.style.maxHeight='';q.style.overflowY='';});
       if(typeof applySidecol==='function')applySidecol();
     }
@@ -15849,8 +16079,9 @@ document.getElementById('pb-vel').addEventListener('click',()=>document.getEleme
   // global querySelectorAll listeners and need no wiring here.
   [['uw-draw','sdraw'],['uw-erase','serase'],['uw-select','sselect'],
    ['uw-flat','sflat'],['uw-smooth','ssmooth'],['uw-vel','svel'],
-   ['uw-undo','s-undo'],['uw-redo','s-redo'],
-   ['sz-trig-uw','sz-trig-sb'],['op-trig-uw','op-trig-sb']].forEach(function(p){
+   ['uw-undo','s-undo'],['uw-redo','s-redo']].forEach(function(p){
+  // sz-trig-uw / op-trig-uw are NOT in this table any more (session 115) —
+  // see Critical Rule #115(c).
     var src=document.getElementById(p[0]),tgt=document.getElementById(p[1]);
     if(src&&tgt)src.addEventListener('click',function(e){e.stopPropagation();tgt.click();});
   });
@@ -16679,20 +16910,43 @@ document.querySelectorAll('.theme-btn').forEach(function(b){
 (function(){
   var btn=document.getElementById('bfile');
   if(!btn)return;
+  // Session 115. #expmenu was the ONE popover in the app that did not route
+  // through _uwPlacePop — it wrote `top = br.bottom+4` with a fallback that
+  // only nudged to br.top and applied no height cap at all. In ultra-wide
+  // #bfile is inside #topbar, which _uwAdopt() reparents into the full-height
+  // #sidecol-uw column, so a 14-row menu dropped off a button halfway down a
+  // vertical strip and ran off the bottom of the screen with nothing to
+  // scroll. It now opens LATERALLY like every other submenu.
+  //
+  // The non-uw branch is not the old code either: it carries the same
+  // maxHeight/overflowY discipline, measured from visualViewport rather than
+  // vh units, for the same reason _uwPlacePop does — see its comment. A tall
+  // menu on a short phone cropped in narrow mode too.
+  function _placeExpMenu(menu,anchor){
+    menu.style.right='auto';
+    if(window._uwPlacePop&&window._uwPlacePop(menu,anchor))return;
+    var vv=window.visualViewport;
+    var vw=vv?vv.width:window.innerWidth;
+    var vh=vv?vv.height:window.innerHeight;
+    var m=6;
+    menu.style.maxHeight=Math.max(80,Math.round(vh-m*2))+'px';
+    menu.style.overflowY='auto';
+    var br=anchor.getBoundingClientRect();
+    var mw=menu.offsetWidth||140;
+    // Re-read AFTER the cap — an uncapped offsetHeight puts the clamp back
+    // where it started. Same ordering requirement as _uwPlacePop.
+    var mh=menu.offsetHeight||300;
+    var top=br.bottom+4;
+    if(top+mh>vh-m)top=br.top-4-mh;      // flip above
+    top=Math.max(m,Math.min(top,vh-mh-m));
+    menu.style.top=top+'px';
+    menu.style.left=Math.max(m,Math.min(br.left,vw-mw-m))+'px';
+  }
   btn.addEventListener('click',function(e){
     e.stopPropagation();
     var menu=document.getElementById('expmenu');
     var open=menu.classList.toggle('vis');
-    if(open){
-      var br=btn.getBoundingClientRect();
-      var mw=160;
-      var left=Math.max(4,Math.min(br.left,window.innerWidth-mw-4));
-      var top=br.bottom+4;
-      if(top+300>window.innerHeight)top=br.top-4;
-      menu.style.top=top+'px';
-      menu.style.right='auto';
-      menu.style.left=left+'px';
-    }
+    if(open)_placeExpMenu(menu,btn);
   });
   // Wire new file menu items
   document.getElementById('em-save').addEventListener('click',function(){document.getElementById('expmenu').classList.remove('vis');saveFile();});
@@ -16756,7 +17010,7 @@ function newScene(){
   var _pbv=document.getElementById('pb-vwbtn');if(_pbv)_pbv.classList.remove('on');
   var _hvb=document.getElementById('bviews-hidden');if(_hvb)_hvb.classList.remove('on');
   // ── Close any open popovers / menus ──
-  document.querySelectorAll('#bgpop,#sz-pop,#op-pop,#layers-pop,#prims-pop,#prim-bar,#view-pop,#scale-pop,#ruler-pop,#sym-pop').forEach(function(p){p.classList.remove('open');});
+  document.querySelectorAll('#bgpop,#sz-pop,#op-pop,#sm-pop,#layers-pop,#prims-pop,#prim-bar,#view-pop,#scale-pop,#ruler-pop,#sym-pop').forEach(function(p){p.classList.remove('open');});
   document.querySelectorAll('.cyc-pop').forEach(function(p){p.classList.remove('open');});
   var _exm=document.getElementById('expmenu');if(_exm)_exm.classList.remove('vis');
   document.getElementById('bbg').classList.remove('on');
@@ -17145,11 +17399,25 @@ document.getElementById('scx-cpick').addEventListener('input',function(){
 
   var szPop=document.getElementById('sz-pop');
   var opPop=document.getElementById('op-pop');
-  ['sz-trig-sb','sz-trig-pb'].forEach(function(id){
+  // Session 115: ALL FOUR trigger sets are wired here, each anchored to
+  // `this` — the button the finger actually touched.
+  //
+  // Until now only -sb and -pb were wired; -uw and -scx delegated with
+  // `document.getElementById('sz-trig-sb').click()`, so openPop() received the
+  // HIDDEN #sidecol button as its anchor. In ultra-wide #sidecol is not laid
+  // out, so _uwPlacePop's `if(!br.width&&!br.height)return false` guard
+  // tripped, the call fell through to positionPop(), and the slider was
+  // positioned off a zero rect — nowhere near the button.
+  //
+  // This is the makeCycBtn failure mode again (Critical Rule #104): delegating
+  // by clicking the original carries the STATE correctly and silently loses
+  // the ANCHOR. Recorded as Critical Rule #115(c). State ownership is
+  // unchanged — applySize/applyOpacity are still the only writers.
+  ['sz-trig-sb','sz-trig-pb','sz-trig-uw','sz-trig-scx'].forEach(function(id){
     var el=document.getElementById(id);
     if(el)el.addEventListener('click',function(e){e.stopPropagation();szPop.classList.contains('open')?closePops():openPop(szPop,this);});
   });
-  ['op-trig-sb','op-trig-pb'].forEach(function(id){
+  ['op-trig-sb','op-trig-pb','op-trig-uw','op-trig-scx'].forEach(function(id){
     var el=document.getElementById(id);
     if(el)el.addEventListener('click',function(e){e.stopPropagation();opPop.classList.contains('open')?closePops():openPop(opPop,this);});
   });
@@ -17158,6 +17426,33 @@ document.getElementById('scx-cpick').addEventListener('input',function(){
   if(szSld)szSld.addEventListener('input',function(){applySize(+this.value);});
   var opSld=document.getElementById('op-sld');
   if(opSld)opSld.addEventListener('input',function(){applyOpacity(+this.value);});
+
+  // ── Smoothing strength popover (session 115) ──
+  // Lives in THIS IIFE and not beside the smoothing button because openPop /
+  // closePops / positionPop own popover placement, including the
+  // _uwPlacePop hand-off, and a second placement implementation is exactly the
+  // thing Rule #112(l) is about.
+  var smPop=document.getElementById('sm-pop');
+  var smSld=document.getElementById('sm-sld');
+  var smVal=document.getElementById('sm-val');
+  function _smSync(){
+    if(smSld)smSld.value=smoothAmt;
+    if(smVal)smVal.textContent=(smoothAmt>=100?'LINE':String(Math.round(smoothAmt)));
+  }
+  if(smSld)smSld.addEventListener('input',function(){
+    smoothAmt=Math.max(0,Math.min(100,+this.value));
+    if(smVal)smVal.textContent=(smoothAmt>=100?'LINE':String(Math.round(smoothAmt)));
+    if(typeof _savePrefs==='function')_savePrefs();
+  });
+  if(smPop)smPop.addEventListener('click',function(e){e.stopPropagation();});
+  window._openSmoothPop=function(trigger){
+    if(!smPop||!trigger)return;
+    _smSync();
+    if(smPop.classList.contains('open')){closePops();return;}
+    openPop(smPop,trigger);
+  };
+  window._syncSmoothPop=_smSync;
+  _smSync();
 
   redrawAll();
 })();
@@ -18987,7 +19282,14 @@ window.addEventListener('keydown',e=>{
   if((e.ctrlKey||e.metaKey)&&(e.key==='y'||(e.key==='z'&&e.shiftKey))){e.preventDefault();redo();return;}
   if((e.ctrlKey||e.metaKey)&&e.key==='d'){e.preventDefault();duplicateSelected();return;}
   if((e.ctrlKey||e.metaKey)&&e.key==='s'){e.preventDefault();saveFile();return;}
-  if((e.ctrlKey||e.metaKey)&&e.key==='e'){e.preventDefault();var em=document.getElementById('expmenu');em.classList.toggle('vis');return;}
+  if((e.ctrlKey||e.metaKey)&&e.key==='e'){e.preventDefault();
+    // Route through the button's own handler so the menu is PLACED, not just
+    // shown. Toggling .vis directly left it at its CSS resting position
+    // (top:50px/right:44px), which is wrong in every mode but tall.
+    var _bf=document.getElementById('bfile');
+    if(_bf)_bf.click();
+    else document.getElementById('expmenu').classList.toggle('vis');
+    return;}
   if((e.ctrlKey||e.metaKey)&&e.key==='n'){e.preventDefault();document.getElementById('bnew').click();return;}
   if(e.key==='Delete'||e.key==='Backspace'){if(selectedStrokes.length){e.preventDefault();deleteSelected();return;}}
   if(e.ctrlKey||e.metaKey||e.altKey)return;
