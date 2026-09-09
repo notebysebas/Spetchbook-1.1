@@ -18808,7 +18808,43 @@ function _vfRecenter(){
   _vfScheduleSettle();
 }
 
+// ── Soft-keyboard guard (session 119d) ────────────────────────────────────
+// The Android soft keyboard shrinks visualViewport.height by nearly half. Both
+// resize listeners (window at ~5026, visualViewport at ~5031) call this
+// function, and isNarrow below is a pure ratio of visualViewport w/h — so on a
+// 412x915 phone the keyboard takes the ratio from 0.45 to ~1.03 and the app
+// leaves tall mode for the wide branch, then comes back when the keyboard
+// closes. Every text entry therefore ran a full narrow->wide->narrow format
+// round-trip, re-running the whole card/fab/sidecol reconciliation twice.
+//
+// This is the same visualViewport chain as Critical Rule #117(c), which was
+// only ever traced as far as _syncRenderer(). _syncRenderer() is deliberately
+// NOT guarded here: it is correct for it to track the live viewport, and
+// _vvSettled() already owns the capture side. Only the LAYOUT MODE decision is
+// wrong while a field has focus, because the viewport it reads is not the
+// viewport the user is in.
+//
+// A rotation performed while typing is not lost: the deferred flag re-runs the
+// function on blur, once, with the settled viewport.
+var _ulmDeferred=false;
+function _ulmFieldFocused(){
+  var ae=document.activeElement;
+  if(!ae)return false;
+  return ae.tagName==='INPUT'||ae.tagName==='TEXTAREA';
+}
+document.addEventListener('focusout',function(){
+  if(!_ulmDeferred)return;
+  // focusout fires BEFORE activeElement settles; defer a tick so a field-to-
+  // field move doesn't count as a blur and re-run this mid-keyboard.
+  setTimeout(function(){
+    if(_ulmFieldFocused())return;
+    _ulmDeferred=false;
+    updateLayoutMode();
+  },0);
+},true);
+
 function updateLayoutMode(){
+  if(_ulmFieldFocused()){_ulmDeferred=true;return;}
   // Use visualViewport when available — gives correct dimensions in PWA standalone
   // before window.innerWidth/Height have settled after launch
   var _vvp=window.visualViewport;
@@ -18910,7 +18946,26 @@ function updateLayoutMode(){
       _fcReturn();
       if(card)card.classList.remove('fc-visible');
       if(fab)fab.classList.remove('fab-visible');
-      window._cardHidden=false;
+      // Session 119d: window._cardHidden=false; was here and is deliberately
+      // GONE. _cardHidden answers one question — "is the narrow-mode control
+      // card closed?" — and wide mode is not entitled to an opinion on it.
+      // Resetting it here meant any trip through this branch re-opened a card
+      // the user had closed, the moment narrow mode came back and re-read the
+      // flag at the `else if(!window._cardHidden)` above.
+      //
+      // Two ways in. The legitimate one: close the card, rotate to landscape,
+      // rotate back — card returns. The Android one, which is how this was
+      // found: the soft keyboard shrinks visualViewport.height, isNarrow flips
+      // false, this branch runs, and confirming a precise-input value brings
+      // the card back. The guard on updateLayoutMode() now stops the spurious
+      // flip, but the rotation case is a real format change and has to be
+      // fixed here rather than upstream.
+      //
+      // Nothing in wide mode reads _cardHidden — it gates only the narrow
+      // branch above and #bhide's narrow restore — so dropping the write costs
+      // nothing. Same principle as the _cardHidden / _uiHideCardOpened split
+      // (Rule #71): a format transition must not reset a user-intent flag
+      // belonging to the mode it is leaving.
       document.documentElement.style.setProperty('--pb-h','0px');
       // Sync renderer + surface after sidecol becomes visible — layout change doesn't fire resize in PWA
       setTimeout(function(){
@@ -19373,7 +19428,26 @@ function _fcResizeCanvases(){
   // fab stays visible even while the card is open (see CSS); in normal
   // narrow mode the fab is only ever visible while the card is closed, so
   // the "close" branch below is unreachable there and behavior is unchanged.
+  // Session 119d. #pb-fab has TWO input paths onto this one toggle — the
+  // touchend handler below and the click handler beside it — and the only
+  // thing separating them is the touchend's preventDefault() suppressing the
+  // synthetic click. That suppression is not dependable on Android when the
+  // layout has just reflowed under the finger, which is exactly what a soft-
+  // keyboard dismiss does. A double fire reads as "minimize, and it comes
+  // straight back", and worse, leaves _uiHideCardOpened true, so every later
+  // updateLayoutMode() re-adds fc-visible and the card will not stay closed.
+  //
+  // 350ms is the same order as LCL_HOLD_MS's tap/hold split: comfortably above
+  // a touchend/click pair (which arrive within ~300ms at worst) and well below
+  // a deliberate second tap. Do not remove this in favour of tightening the
+  // preventDefault — the touch/mouse asymmetry is the recurring bug class here,
+  // and a shared guard is the only thing that covers both paths at once.
+  var FAB_TOGGLE_GUARD_MS=350;
+  var _fabToggleAt=0;
   function _pbFabToggle(){
+    var now=Date.now();
+    if(now-_fabToggleAt<FAB_TOGGLE_GUARD_MS)return;
+    _fabToggleAt=now;
     if(card.classList.contains('fc-visible')){
       card.classList.remove('fc-visible');
       window._cardHidden=true;
