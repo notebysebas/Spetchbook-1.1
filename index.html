@@ -822,6 +822,13 @@ body.pages-open:not(.views-open):not(.narrow-mode) #lcl-float-group{bottom:100px
   width:calc(19px * var(--fbcs,1));height:calc(19px * var(--fbcs,1))}
 .fb-note .fb-ndel{top:calc(-22px * var(--fbcs,1));right:0;
   width:calc(19px * var(--fbcs,1));height:calc(19px * var(--fbcs,1))}
+/* Freeze (128), references only: below the paper's bottom-left corner. Text
+   rather than a glyph — it is a one-way change of what the note is, and a
+   word says that where an icon would have to be learned. */
+.fb-note .fb-nfrz{bottom:calc(-22px * var(--fbcs,1));left:0;
+  height:calc(19px * var(--fbcs,1));
+  padding:0 calc(6px * var(--fbcs,1));
+  font-size:calc(8px * var(--fbcs,1));letter-spacing:.06em}
 /* Scale handle, below the paper's bottom-right corner. */
 .fb-note .fb-nrsz{bottom:calc(-22px * var(--fbcs,1));right:0;
   width:calc(19px * var(--fbcs,1));height:calc(19px * var(--fbcs,1));
@@ -5657,7 +5664,13 @@ function _disposeStrokeMesh(mesh){
 // ── Stroke physics ───────────────────────────────────────────────
 function computeVels(pts){
   var v=[0];
-  for(var i=1;i<pts.length;i++)v.push(pts[i].distanceTo(pts[i-1]));
+  // 128a: the distance written out rather than pts[i].distanceTo(), so this
+  // also runs on STORED points ({x,y,z}, no Vector3 methods) for the flipbook's
+  // width estimate (_fbTaperMean). Same arithmetic, same order, same result.
+  for(var i=1;i<pts.length;i++){
+    var _dx=pts[i].x-pts[i-1].x,_dy=pts[i].y-pts[i-1].y,_dz=pts[i].z-pts[i-1].z;
+    v.push(Math.sqrt(_dx*_dx+_dy*_dy+_dz*_dz));
+  }
   // 7-point gaussian-weighted smoothing kernel [1,4,8,12,8,4,1]/38
   var s=v.slice();
   var weights=[1,4,8,12,8,4,1],half=3;
@@ -5808,11 +5821,99 @@ function _capsOnlyMesh(pts,r,mat){
 //                              recovered; buildTube falls back to the live path
 // Serialized as a flat number array, 3dp: length 3, or 3 × pts.length.
 // Critical Rule #168.
+//
+// SESSION 128b — WHICH SURFACE. The sampler below only ever raycast surfMesh
+// and fell back to surfGroup's own normal. But the pen does not always draw on
+// surfMesh: "Use as plane" (`_primsAsPlane`) draws on the REFERENCE PRIMITIVES,
+// and FPS trace mode draws on `_fpsPlaneFill`, which lives in its own group.
+// On either of those a marker took the (hidden) drawing plane's normal, so the
+// ribbon stood perpendicular to the surface it was drawn on, and turning the
+// plane to xy/xz/yz changed whether it lay flat or on edge. Reported as
+// exactly that. The normal now comes from the surface the point was hit on,
+// through the SAME ray that produced the point — cast from the camera back
+// through the point, which is how s2w() found it in the first place (the
+// camera cannot move mid-stroke, and finStroke() samples before it can).
 var _fnRC=new THREE.Raycaster(), _fnO=new THREE.Vector3(), _fnD=new THREE.Vector3();
+var _fnNM=new THREE.Matrix3(), _fnCamO=new THREE.Vector3();
+// A face normal is in its mesh's LOCAL space. The inverse-transpose of
+// matrixWorld is the only correct way to world space: applyQuaternion (what
+// every one of these samplers used before 128b) silently ignores the object's
+// scale, and surfGroup can be scaled per axis (surfScaleAxes), which tilts
+// every normal on a cube, cylinder, cone, sphere or loft.
+function _faceWorldNormal(face,obj,out){
+  _fnNM.getNormalMatrix(obj.matrixWorld);
+  return out.copy(face.normal).applyNormalMatrix(_fnNM).normalize();
+}
+// The ray that drew this point: from the camera through it. Perspective rays
+// start at the eye; an orthographic ray has no eye, so it starts behind the
+// point along the view direction.
+function _fnCamRay(p,rc){
+  var c=activeCam();
+  c.updateMatrixWorld();
+  if(c.isOrthographicCamera){
+    _fnD.set(0,0,-1).applyQuaternion(c.quaternion).normalize();
+    _fnO.copy(p).addScaledVector(_fnD,-50);
+  }else{
+    _fnCamO.setFromMatrixPosition(c.matrixWorld);
+    _fnD.copy(p).sub(_fnCamO);
+    if(_fnD.lengthSq()<1e-12)return false;
+    _fnD.normalize();
+    _fnO.copy(_fnCamO);
+  }
+  rc.set(_fnO,_fnD);
+  rc.near=0;rc.far=Infinity;
+  return true;
+}
+// Normal of the reference primitive under a drawn point ("use as plane").
+// Signed toward the camera, so the ribbon's face points at whoever drew it —
+// the same side a plane's own normal gives.
+function _primNormalAt(p,fallback){
+  if(!window._primRaycast)return null;
+  if(!_fnCamRay(p,_fnRC))return null;
+  var hit=window._primRaycast(_fnRC);
+  if(!hit||!hit.face||!hit.object)return null;
+  var n=_faceWorldNormal(hit.face,hit.object,new THREE.Vector3());
+  if(n.dot(_fnD)>0)n.negate();
+  if(!isFinite(n.x)||n.lengthSq()<1e-9)return fallback?fallback.clone():null;
+  return n;
+}
 // Same ray, same tolerances, same fallback as the legacy per-sample branch in
 // buildTube, so a stroke drawn with this build looks exactly as it did before.
 function _surfNormalAt(p,g){
   var up=g.clone();
+  // 1. 128b — THE CAMERA RAY. The old short ray below is cast along the
+  // DRAWING PLANE's normal, which on a curved surface seen at a slant can
+  // miss the surface entirely (measured on a cone: every sample missed), and
+  // a miss silently returned the plane's normal — a marker standing
+  // perpendicular to the cone it was drawn on, and turning with the plane.
+  // The camera ray cannot miss: it is the ray that produced the point.
+  if(surfMesh&&surfMesh.geometry&&_fnCamRay(p,_fnRC)){
+    var prevS=surfMesh.material.side;
+    surfMesh.material.side=THREE.DoubleSide;
+    var chits=_fnRC.intersectObject(surfMesh,false);
+    surfMesh.material.side=prevS;
+    // Nearest hit to the point, not the first: a cylinder, cone or sphere is
+    // hit front and back by one ray, and on the far side the normal is the
+    // other way round.
+    var best=null,bd=1e9,ci,cd;
+    for(ci=0;ci<chits.length;ci++){
+      cd=chits[ci].point.distanceTo(p);
+      if(cd<bd){bd=cd;best=chits[ci];}
+    }
+    // The guard keeps a stroke drawn OUTSIDE the surface mesh (the plane's
+    // unbounded extension, _planeExtHit) on the plane's own normal.
+    if(best&&best.face&&bd<0.5){
+      var cn=_faceWorldNormal(best.face,surfMesh,new THREE.Vector3());
+      // Face the camera. The sign does not change the ribbon's shape — it
+      // permutes its vertices (see _fnRecoverLegacy) — but it keeps a marker
+      // consistent with one drawn on a plane pointed at the viewer.
+      if(cn.dot(_fnD)>0)cn.negate();
+      return cn;
+    }
+  }
+  // 2. The pre-128b short ray along the plane normal, kept for the cases it
+  //    still serves: a stroke sampled with no usable camera (legacy recovery
+  //    at load time, where the view may be anywhere).
   if(surfMesh&&surfMesh.geometry){
     _fnO.copy(p).addScaledVector(g,0.1);
     _fnRC.set(_fnO,_fnD.copy(g).negate());
@@ -5822,7 +5923,10 @@ function _surfNormalAt(p,g){
     var hits=_fnRC.intersectObject(surfMesh,false);
     surfMesh.material.side=prevSide;
     if(hits.length>0&&hits[0].face){
-      var fn=hits[0].face.normal.clone().applyQuaternion(surfGroup.quaternion).normalize();
+      // 128b: through the mesh's normal matrix, not surfGroup's quaternion —
+      // see _faceWorldNormal. surfMesh, not surfGroup: the mesh's own
+      // matrixWorld already carries the group's transform.
+      var fn=_faceWorldNormal(hits[0].face,surfMesh,new THREE.Vector3());
       if(fn.dot(g)<0)fn.negate();
       up=fn;
     }
@@ -5837,9 +5941,33 @@ function _surfNormalAt(p,g){
 function _flatNormalsAt(pts){
   if(!pts||!pts.length)return undefined;
   surfGroup.updateMatrixWorld(true);
+  var i,out=new Array(pts.length);
+  // ── The surface the pen was actually on (128b) ──
+  // 1. Reference primitives, when "use as plane" is on.
+  if(window._primsAsPlane&&window._primRaycast){
+    var prev=null;
+    for(i=0;i<pts.length;i++){
+      var pn=_primNormalAt(pts[i],prev);
+      // A miss (a smoothed point pulled off the silhouette, or a gap between
+      // prims) inherits the last normal rather than falling back to the
+      // hidden plane, which is the whole bug this branch fixes.
+      if(pn)prev=pn;
+      out[i]=pn||(prev?prev.clone():new THREE.Vector3(0,0,1).applyQuaternion(activeCam().quaternion));
+    }
+    return _fnCompact(out);
+  }
+  // 2. The FPS trace plane, which is not in surfGroup.
+  if(_fpsMode&&_fpsSurfMode===1&&_fpsPlaneFill){
+    _fpsPlaneFill.updateMatrixWorld(true);
+    var fq=new THREE.Quaternion();
+    _fpsPlaneFill.getWorldQuaternion(fq);
+    var fnv=new THREE.Vector3(0,0,1).applyQuaternion(fq).normalize();
+    for(i=0;i<pts.length;i++)out[i]=fnv.clone();
+    return _fnCompact(out);
+  }
+  // 3. The drawing surface.
   var g=new THREE.Vector3(0,0,1).applyQuaternion(surfGroup.quaternion);
-  var out=new Array(pts.length);
-  for(var i=0;i<pts.length;i++)out[i]=_surfNormalAt(pts[i],g);
+  for(i=0;i<pts.length;i++)out[i]=_surfNormalAt(pts[i],g);
   return _fnCompact(out);
 }
 function _fnCompact(arr){
@@ -6082,8 +6210,8 @@ function buildTube(pts,vels,color,sz,op,flat,fn,vt){
         surfMesh.material.side=prevSide;
         if(hits.length>0&&hits[0].face){
           // Transform face normal from mesh local space to world space
-          const hitN=hits[0].face.normal.clone()
-            .applyQuaternion(surfGroup.quaternion).normalize();
+          // 128b: normal matrix, not the group quaternion (_faceWorldNormal).
+          const hitN=_faceWorldNormal(hits[0].face,surfMesh,new THREE.Vector3());
           // Ensure normal points same way as group normal (not inward)
           if(hitN.dot(groupNorm)<0)hitN.negate();
           up=hitN;
@@ -8875,11 +9003,146 @@ function _fbExpandMerged(arr){
       if(s.mx){
         _fbMxA.fromArray(s.mx);
         if(e.mx){_fbMxB.fromArray(e.mx);_fbMxA.multiply(_fbMxB);}
-        out.push({pts:e.pts,color:e.color,op:e.op,sz:e.sz,mx:_fbMxA.toArray()});
+        // flat carried (128a): the projected width depends on it.
+        out.push({pts:e.pts,color:e.color,op:e.op,sz:e.sz,flat:e.flat,mx:_fbMxA.toArray()});
       }else out.push(e);
     }
   }
   return out;
+}
+// ── ONE PROJECTION, TWO CONSUMERS (session 128) ───────────────────
+// The page proxy / reference canvas and the snapshot note both need "stored
+// 3D control points -> 2D polylines through a camera". Written once, here; the
+// canvas strokes each run and the snapshot collects it. A second copy would
+// be the first place a merged-layer or layer-visibility fix got applied to
+// only one of them.
+//
+// Callbacks, not a returned array: the reference canvas runs this on every
+// frame of an orbit drag, and must not allocate a point list to throw away.
+//   begin(s)            before a stroke; return false to skip it
+//   pt(px,py,start)     one projected point; start = begin a new polyline
+//   end(s,w)            after a stroke; w = its projected width (128a)
+//
+// LAYER VISIBILITY (128). The proxy used to draw every stroke whatever its eye
+// said, so a hidden layer reappeared on an unvisited page's proxy and in a
+// reference, and a real WebGL snapshot of the same page did not show it. Now
+// all three agree, and a Freeze captures what the reference showed. Filtered
+// BEFORE the merged expansion: a merged record is visible by the Merged
+// layer's eye, not by its sources' original layers.
+function _fbVisStrokes(arr){
+  var i,L,out=null;
+  for(i=0;i<arr.length;i++){
+    L=(arr[i]&&arr[i].layer!=null)?arr[i].layer:1;
+    if(layerVisible[L]===false){
+      // Copy on the first hidden stroke only, so the common all-visible case
+      // returns the input and allocates nothing.
+      if(!out)out=arr.slice(0,i);
+    }else if(out)out.push(arr[i]);
+  }
+  return out||arr;
+}
+// ── WIDTH IS PROJECTED, NOT GUESSED (session 128a) ────────────────
+// "Marker wide strokes don't match 3D." Until 128a every consumer drew a
+// stroke sz x W/220 wide: one rule for tube and marker alike, and no camera
+// in it. But buildTube makes a tube 2 x baseR across and a flat marker 8 x
+// baseR (half-width baseR*4), baseR = sz*0.011 — a marker is FOUR TIMES a
+// tube of the same size, and both shrink with distance. So a marker came out
+// a quarter too thin relative to tubes, and neither tracked a dolly.
+//
+// Now the walker measures it: the stroke's width in world units (its own mx
+// scale included) times the screen scale at each visible point's view depth,
+// averaged over the stroke — one width per stroke, the stated limit of these
+// flat renderings. Perspective: H*zoom / (2*d*tan(fov/2)) units per world
+// unit at depth d; orthographic: H*zoom / (top-bottom), depth-free.
+// The velocity taper is carried as its AVERAGE (_fbTaperMean). Deliberately
+// IGNORED: the taper's SHAPE (full ends, thinner middle) and a marker's
+// foreshortening when its surface is seen at a slant. Both need a width per
+// point, which a canvas stroke and an ink line do not have.
+var FB_TUBE_WORLD=0.022, FB_MARKER_WORLD=0.088;   // x sz — see buildTube
+// The 3D velocity taper, AVERAGED over the stroke. A tapered tube is full
+// weight only at its ends and down to ~55% between (a marker ~51%), so full
+// weight alone made every tapered stroke read heavier than the 3D view. One
+// width per stroke cannot show the taper; it can carry its average. Mirrors
+// buildTube's own pipeline for a loaded stroke exactly: computeVels over all
+// points, the same .003 dedup, the per-stroke min/max normalisation, the same
+// end zones and the same 0.75 x 0.6 / 0.65 factors. A stroke drawn this
+// session still carries capture-time vels in the live scene, which a stored
+// record does not have, so for those this is close rather than exact until
+// the next reload. If buildTube's taper changes, change this with it.
+function _fbTaperMean(s){
+  if(s.vt===false)return 1;
+  var p=s.pts,n=p.length;
+  if(n<2)return 1;
+  var v=computeVels(p),fv=[v[0]],i,lx=p[0].x,ly=p[0].y,lz=p[0].z,dx,dy,dz;
+  for(i=1;i<n;i++){
+    dx=p[i].x-lx;dy=p[i].y-ly;dz=p[i].z-lz;
+    if(Math.sqrt(dx*dx+dy*dy+dz*dz)>.003){fv.push(v[i]);lx=p[i].x;ly=p[i].y;lz=p[i].z;}
+  }
+  var N=fv.length;
+  if(N<2)return 1;
+  var mx=0,mn=Infinity;
+  for(i=0;i<N;i++){if(fv[i]>mx)mx=fv[i];if(fv[i]<mn)mn=fv[i];}
+  if(mx===0)mx=1;
+  var range=mx-mn||1,flat=!!s.flat,zw=flat?.08:.12,k=flat?.65:.6,sum=0,t,z,vn;
+  for(i=0;i<N;i++){
+    t=i/(N-1);
+    z=t<zw?t/zw:t>1-zw?(1-t)/zw:1;
+    vn=(fv[i]-mn)/range*0.75;
+    sum+=1-vn*z*k;
+  }
+  return sum/N;
+}
+function _fbStrokeWorldW(s){return (+s.sz||1)*(s.flat?FB_MARKER_WORLD:FB_TUBE_WORLD);}
+// Mean column length of the upper 3x3: the uniform scale a gizmo gave the
+// stroke. Non-uniform scale is averaged, which is the best one width can do.
+function _fbMxScale(e){
+  var a=Math.sqrt(e[0]*e[0]+e[1]*e[1]+e[2]*e[2]),
+      b=Math.sqrt(e[4]*e[4]+e[5]*e[5]+e[6]*e[6]),
+      c=Math.sqrt(e[8]*e[8]+e[9]*e[9]+e[10]*e[10]);
+  var m=(a+b+c)/3;
+  return (m>0&&isFinite(m))?m:1;
+}
+function _fbProjWalk(pgStrokes,cam,W,H,begin,pt,end){
+  if(!pgStrokes||!pgStrokes.length)return;
+  // Vector3.project() is matrixWorldInverse then projectionMatrix; it is
+  // split into its two halves below so the view-space depth can be read in
+  // between. matrixWorldInverse is normally only refreshed inside
+  // renderer.render(), and proxies run with no render between them.
+  cam.updateMatrixWorld();
+  cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
+  var ortho=!!cam.isOrthographicCamera, zoom=cam.zoom||1, ppuK;
+  if(ortho)ppuK=H*zoom/((cam.top-cam.bottom)||1);
+  else ppuK=H*zoom/(2*Math.tan((cam.fov||55)*Math.PI/360));
+  // Session 127: a merged-layer record's ink is in its src, not its pts.
+  pgStrokes=_fbExpandMerged(_fbVisStrokes(pgStrokes));
+  for(var i=0;i<pgStrokes.length;i++){
+    var s=pgStrokes[i];
+    if(!s||!s.pts||s.pts.length<2)continue;
+    if(begin(s)===false)continue;
+    var hasMx=!!s.mx;
+    if(hasMx)_fbProjM.fromArray(s.mx);
+    var started=false, acc=0, cnt=0, d;
+    for(var j=0;j<s.pts.length;j++){
+      _fbProjV.set(s.pts[j].x,s.pts[j].y,s.pts[j].z);
+      if(hasMx)_fbProjV.applyMatrix4(_fbProjM);
+      _fbProjV.applyMatrix4(cam.matrixWorldInverse);
+      d=-_fbProjV.z;
+      _fbProjV.applyMatrix4(cam.projectionMatrix);
+      // NDC z outside [-1,1] is behind the camera or past the far plane;
+      // projecting those gives mirrored garbage, so break the polyline
+      // rather than drawing a line across the page to nowhere.
+      if(_fbProjV.z<-1||_fbProjV.z>1){started=false;continue;}
+      // Width goes as 1/depth, so it is the per-point WIDTHS that are
+      // averaged (sum of 1/d), not the depths.
+      if(ortho){acc+=1;cnt++;}
+      else if(d>1e-6){acc+=1/d;cnt++;}
+      pt((_fbProjV.x*0.5+0.5)*W,(-_fbProjV.y*0.5+0.5)*H,!started);
+      started=true;
+    }
+    // Projected width in the caller's units (canvas px or note units). 0 when
+    // nothing of the stroke was in front of the camera.
+    end(s,cnt?_fbStrokeWorldW(s)*_fbTaperMean(s)*(hasMx?_fbMxScale(s.mx):1)*ppuK*(acc/cnt):0);
+  }
 }
 function _fbProxyCanvas(pgStrokes,W,H,camOverride,reuse){
   var c=reuse||document.createElement('canvas');
@@ -8889,38 +9152,17 @@ function _fbProxyCanvas(pgStrokes,W,H,camOverride,reuse){
   x.clearRect(0,0,W,H);
   x.fillStyle=_fbBgHex();x.fillRect(0,0,W,H);
   if(!pgStrokes||!pgStrokes.length)return c;
-  // Vector3.project() reads camera.matrixWorldInverse, which is normally only
-  // refreshed inside renderer.render(). Proxies are generated in a loop with no
-  // render between them, so refresh it explicitly.
-  var cam=camOverride||activeCam();
-  cam.updateMatrixWorld();
-  cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
   x.lineCap='round';x.lineJoin='round';
-  // Session 127: a merged-layer record's ink is in its src, not its pts.
-  pgStrokes=_fbExpandMerged(pgStrokes);
-  for(var i=0;i<pgStrokes.length;i++){
-    var s=pgStrokes[i];
-    if(!s||!s.pts||s.pts.length<2)continue;
-    var hasMx=!!s.mx;
-    if(hasMx)_fbProjM.fromArray(s.mx);
-    x.strokeStyle=s.color||'#000000';
-    x.globalAlpha=Math.max(.15,Math.min(1,s.op==null?1:s.op));
-    x.lineWidth=Math.max(.6,(s.sz||1)*(W/220));
-    x.beginPath();
-    var started=false;
-    for(var j=0;j<s.pts.length;j++){
-      _fbProjV.set(s.pts[j].x,s.pts[j].y,s.pts[j].z);
-      if(hasMx)_fbProjV.applyMatrix4(_fbProjM);
-      _fbProjV.project(cam);
-      // NDC z outside [-1,1] is behind the camera or past the far plane;
-      // projecting those gives mirrored garbage, so break the polyline
-      // rather than drawing a line across the page to nowhere.
-      if(_fbProjV.z<-1||_fbProjV.z>1){started=false;continue;}
-      var px=(_fbProjV.x*0.5+0.5)*W, py=(-_fbProjV.y*0.5+0.5)*H;
-      if(!started){x.moveTo(px,py);started=true;}else{x.lineTo(px,py);}
-    }
-    x.stroke();
-  }
+  _fbProjWalk(pgStrokes,camOverride||activeCam(),W,H,
+    function(s){
+      x.strokeStyle=s.color||'#000000';
+      x.globalAlpha=Math.max(.15,Math.min(1,s.op==null?1:s.op));
+      x.beginPath();
+    },
+    function(px,py,start){if(start)x.moveTo(px,py);else x.lineTo(px,py);},
+    // Width is only known once the points have been walked (128a); a canvas
+    // path takes lineWidth at stroke() time, so it is set here.
+    function(s,w){x.lineWidth=Math.max(.6,w);x.stroke();});
   x.globalAlpha=1;
   return c;
 }
@@ -9456,6 +9698,76 @@ function _fbSzDotPx(sz,cap){return Math.max(3,Math.min(cap,Math.round(3+sz*1.8))
 // store: no timestamps, no per-point widths, no schema change. It is derived
 // at render time from the geometry that is already there.
 var FB_TAPER_SP0=4, FB_TAPER_SPAN=22, FB_TAPER_MIN=0.35;
+// SESSION 128 — "too strong and constant line variation". Retuned, values in
+// the block after FB_TAPER_SMOOTH below; these three are overwritten there so
+// the history above still reads against the numbers it was written for.
+// SESSION 127c — the spacing premise above stopped being true the moment
+// capture read getCoalescedEvents(). A pen reporting at 240Hz records a point
+// every few px however fast the hand moves, so spacing no longer carries speed
+// and the taper all but vanished on exactly the device that reported the
+// skipping. It was never really true across devices either: spacing per EVENT
+// is speed x event interval, so a 60Hz Android and a 240Hz iPad drew the same
+// motion at different widths.
+//
+// So speed is now MEASURED at capture (path length over a short clock window)
+// and stored per point as ink[j].sp. The unit is chosen so the constants above
+// keep their meaning unchanged: note-local units travelled per 1/60 s, which
+// is exactly what one point's spacing measured when capture ran once per 60Hz
+// frame. A stroke without sp (anything drawn before 127c) renders from spacing
+// as it always did.
+var FB_SPEED_WIN=16;           // ms of raw samples the speed is averaged over
+var FB_SPEED_FRAME=1000/60;    // ms — the frame the stored unit is expressed per
+// Both ends of a tapered stroke ease back to full width over this many
+// note-local units (capped at a third of the stroke, so a short stroke still
+// has a middle). A flick is fastest at the moment it starts and the moment it
+// lifts, so without this every stroke began and ended at its thinnest. Same
+// intent as buildTube's velZone on the 3D side, measured in LENGTH rather than
+// in a fraction of the stroke: on a note a fraction would give a long line a
+// long, visible swell at each end.
+var FB_TAPER_END=14;
+// SESSION 127d — "smoother line edge, the size switches too fast". 127c's
+// three-SAMPLE average was sized for one point per frame (~50ms of motion);
+// at 240Hz three samples are ~12ms, so width followed every flicker of the
+// measured speed. Smoothing is now by LENGTH, which no sample rate can shrink:
+//  FB_TAPER_SMOOTH  gaussian sigma, note units, over the per-point width
+//  FB_TAPER_SLEW    max half-width change per note unit, as a fraction of the
+//                   pen width — a hard ceiling on how steep the edge can get
+//  FB_TAPER_TAN     the tangent (and so each edge normal) is taken across this
+//                   many units either side, not across one neighbour: at 3px
+//                   spacing one neighbour is hand tremor and 0.1-unit rounding,
+//                   and it wobbled the edge even at constant width.
+var FB_TAPER_SMOOTH=6, FB_TAPER_SLEW=0.06, FB_TAPER_TAN=3;
+// SESSION 128 — TWO REPORTS: "as I turn it leaves a gap" and "too strong and
+// constant line variation".
+//
+// THE GAP was geometry, not tuning. 127d drew a tapered stroke as ONE outline:
+// the left edge forwards, the right edge back. At a turn tighter than the
+// half-width, the inner edge runs backwards over itself, and the tangent
+// averaged across +/-FB_TAPER_TAN cut the outer corner — the tip of a fast V
+// pinched to a needle and a hairpin opened a notch. No smoothing constant
+// fixes that; the outline itself is the wrong shape there. See _fbInkRibbon.
+// FB_TAPER_TAN is no longer read (the edge normal is now the bisector of the
+// neighbouring segments, on a centreline that is already smooth).
+//
+// THE VARIATION is the numbers. Width now starts to fall later (SP0), falls
+// over a wider speed band (SPAN) through a smoothstep rather than linearly,
+// bottoms out at half the pen rather than a third (MIN), follows a longer
+// average (SMOOTH) and may change at a third of the old rate (SLEW). Compared
+// by rendering the same speed traces old and new and looking at them.
+FB_TAPER_SP0=5; FB_TAPER_SPAN=30; FB_TAPER_MIN=0.5;
+FB_TAPER_SMOOTH=10; FB_TAPER_SLEW=0.02;
+//  FB_TAPER_SUB   the smooth centreline is sampled every this many radians of
+//                 turn, so an edge never shows a facet at note zoom
+//  FB_TAPER_FOLD  split the outline at a sample where radius x turn exceeds
+//                 this fraction of the shorter neighbouring segment — i.e.
+//                 where the curve is tighter than the nib, and the inner edge
+//                 would fold
+//  FB_TAPER_LAP   pieces overlap by this much (note units, and at most 0.3 of
+//                 the radius) rather than abut; abutting pieces of one path
+//                 leave an anti-aliasing seam in Chromium (measured, 128)
+//  FB_TAPER_RMIN  smallest half-width drawn, so a hairline never vanishes
+//  FB_TAPER_DP    decimals written to the path string
+var FB_TAPER_SUB=0.12, FB_TAPER_FOLD=0.5, FB_TAPER_LAP=0.3, FB_TAPER_RMIN=0.2, FB_TAPER_DP=1;
 
 var bookNotes=[];
 var _fbNotesEdit=false;
@@ -9508,7 +9820,8 @@ function _fbNoteFocus(n){
 // it took off, matching the single markContentDirty() endErase already fires
 // per gesture; and a deleted note, which is the only destructive action in
 // the layer and the reason undo is a better answer here than a confirm modal
-// you would have to dismiss every single time.
+// you would have to dismiss every single time. Session 128 adds a FREEZE
+// ('frz'): turning a reference into a snapshot discards its camera.
 //
 // WHAT IS DELIBERATELY OUT: move, resize and add. They are cheap to reverse
 // by hand, and an entry per drag would bury the stroke history under nudges
@@ -9576,6 +9889,23 @@ function _fbUndoApply(a,undoing){
       }
     }
     return _fbUndoTouch(a.n);
+  }
+  if(a.t==='frz'){
+    // 128. Undo takes the frozen lines out by identity and puts the camera
+    // back; redo does the reverse. Either way the note changes KIND, so the
+    // layer is rebuilt rather than repainted (see _fbRefFreeze). Later ink on
+    // the frozen note is always undone first, by stack order.
+    if(undoing){
+      for(i=0;i<a.st.length;i++){k=a.n.ink.indexOf(a.st[i]);if(k>=0)a.n.ink.splice(k,1);}
+      a.n.ref=a.ref;
+    }else{
+      a.n.ref=null;
+      for(i=0;i<a.st.length;i++)a.n.ink.push(a.st[i]);
+    }
+    _fbNotesRender();
+    vis=!!_fbNoteEl(a.n);
+    if(vis)_fbNoteFocus(a.n);
+    return vis;
   }
   if(a.t==='ndel'){
     // Visibility is read on whichever side actually HAS the note: after the
@@ -9697,6 +10027,28 @@ var _fbTaper=true;
 // per-note state would let the stage's pinch abort only whichever stroke
 // happened to register last.
 var _fbInkActive=null;
+// SESSION 127c. Whether the gesture _fbInkActive holds was started by a PEN.
+// Read by the stage, which must not count a touch contact against a pen stroke:
+// on an iPad the palm resting on the glass arrives as a touch pointer, and
+// counting it made _fbMtMax 2 — the pen's own move then took the multi-touch
+// bail and abortInk() deleted the stroke being drawn. Only meaningful while
+// _fbInkActive is non-null; every start writes it, so a stale value after an
+// end is never read.
+var _fbInkPen=false;
+// SESSION 127d. When a pen last finished a note gesture (Date.now(), not an
+// event timeStamp — older WebViews put those on a different clock). 127c kept
+// a palm out of the ledger only WHILE the pen was down, and a hand moving from
+// one line to the next is exactly when it is not: palm contacts landing in the
+// gap were counted, two of them made _fbMtMax 2, and the next pen-down was
+// refused by the multi-touch bail — the "skips going fast from one line to the
+// next" report. A touch landing within FB_PALM_MS of a pen lift is a palm.
+// Fingers that land later navigate as always; a two-finger pinch started less
+// than FB_PALM_MS after lifting the pen is ignored and has to be repeated.
+var _fbPenUpAt=0, FB_PALM_MS=800;
+function _fbPalmWindow(){return (_fbInkActive&&_fbInkPen)||(Date.now()-_fbPenUpAt<FB_PALM_MS);}
+// Installed by the stage block: ends a pinch/pan in progress and drops touch
+// contacts from the ledger, for a pen that is about to draw. Null until then.
+var _fbStagePenTakeover=null;
 
 // ── Document-level gesture enders (session 123b — bug fix) ────────
 // WHY A REGISTRY AND NOT A LISTENER PER HANDLER.
@@ -9936,53 +10288,250 @@ function _fbInkPath(pts){
 // the ribbon and back down the other gives ONE node per stroke, same as the
 // untapered form.
 //
-// Width comes from point SPACING, which is already a speed measure because
-// capture is distance-thresholded. Spacing is smoothed over three samples —
-// raw per-segment spacing is jittery enough that the edge reads as serrated
-// rather than as a taper.
-function _fbInkRibbon(pts,w){
+// Width comes from speed: the stored per-point `sp` when the stroke has one
+// (127c onward, see FB_SPEED_FRAME), otherwise point SPACING, which was the
+// speed measure while capture was one point per frame. Either is smoothed over
+// length (127d, see FB_TAPER_SMOOTH) — raw values are jittery enough that the
+// edge reads as serrated rather than as a taper.
+//
+// SESSION 127c, two changes to the outline:
+//  - ROUND ENDS. The outline used to close with a straight L across each end,
+//    which is a butt cap: the CSS round cap on .fb-ink only ever reached the
+//    UNtapered form, and taper is on by default. Each end is now a half-circle
+//    arc whose radius is the half-width at that end. Both arcs use sweep 0:
+//    L is the +normal side, (-dy,dx), which in y-down screen space puts the
+//    forward bulge of both caps on the decreasing-angle side. Verified by
+//    rasterising, not only by reasoning — see handoff 127c.
+//  - FULL WIDTH AT BOTH ENDS, easing to the speed width over FB_TAPER_END.
+//
+// SESSION 127d replaces the sample-count smoothing with length-based smoothing
+// (see FB_TAPER_SMOOTH). Order is load-bearing: speed width -> gaussian ->
+// slew limit -> end envelope. The envelope goes LAST so the ends are exactly
+// full width even on a short stroke where the slew limit would otherwise have
+// pulled them down.
+//
+// SESSION 128 — THE OUTLINE IS NO LONGER ONE LOOP. Three changes, all found by
+// rendering, not by reading:
+//
+//  1. CENTRELINE. The width is laid along the SAME midpoint-quadratic curve
+//     _fbInkPath draws for untapered ink, sampled every FB_TAPER_SUB radians of
+//     turn. Tapered and untapered ink now trace one path.
+//  2. RUNS AND DISCS. The outline is split into runs wherever the curve is
+//     tighter than the nib (FB_TAPER_FOLD), and a disc of the local radius sits
+//     at every split and at both ends. Inside a run the edge cannot fold. A
+//     disc is what a round nib leaves at a corner, so a V gets a round tip.
+//     EVERY PIECE WINDS THE SAME WAY — a run is left edge forwards, right edge
+//     back, a disc is two sweep-0 arcs — so under the default nonzero fill,
+//     overlaps (a corner, a cursive loop crossing itself) always sum to a
+//     filled winding and can never cancel into a hole. Tested with
+//     isPointInPath across 400 random scribbles: 0 of 208k interior points
+//     outside. The single outline this replaces put a point outside on every
+//     fast V.
+//  3. OVERLAP, NOT ABUT (FB_TAPER_LAP). Pieces that merely touch leave a
+//     visible anti-aliasing seam in Chromium even though they are one <path>.
+//
+// NAMED ERROR, caught in the prototype (Rule #116c): the discs were first
+// written with large-arc 1 and each endpoint rounded on its own. Rounding can
+// bring the two endpoints closer than the diameter, and then the large arc is
+// the one whose centre moves off the stroke — every disc became a taller oval
+// and stuck out of the edge as a nub at the top of every tight curve. The fix
+// is to derive the radius from the ROUNDED endpoints and use large-arc 0.
+// _fbInkDotD had the same latent form and is fixed the same way.
+//
+// String size: about 1.5x the 127d outline (measured on random scribbles). The
+// untapered and dot forms are unchanged.
+function _fbInkRibbon(pts,w,spIn){
   var n=pts.length/2;
   if(n<2)return '';
-  var i,sp=[],dx,dy;
-  for(i=0;i<n-1;i++){
-    dx=pts[(i+1)*2]-pts[i*2];dy=pts[(i+1)*2+1]-pts[i*2+1];
-    sp.push(Math.sqrt(dx*dx+dy*dy));
+  var i,j,k,dx,dy;
+  var cum=[0],S;
+  for(i=1;i<n;i++){
+    dx=pts[i*2]-pts[(i-1)*2];dy=pts[i*2+1]-pts[(i-1)*2+1];
+    cum.push(cum[i-1]+Math.sqrt(dx*dx+dy*dy));
   }
-  sp.push(sp[sp.length-1]);
-  function widthAt(i){
-    var a=sp[Math.max(0,i-1)],b=sp[i],c=sp[Math.min(sp.length-1,i+1)];
-    var v=(a+b+c)/3;
-    var t=(v-FB_TAPER_SP0)/FB_TAPER_SPAN;
-    if(t<0)t=0; if(t>1)t=1;
-    return w*(1-(1-FB_TAPER_MIN)*t)*0.5;   // half-width
+  S=cum[n-1];
+  var raw=[];
+  if(spIn&&spIn.length===n){
+    for(i=0;i<n;i++)raw.push(isFinite(+spIn[i])?+spIn[i]:0);
+  }else{
+    for(i=0;i<n-1;i++)raw.push(cum[i+1]-cum[i]);
+    raw.push(raw[raw.length-1]);
   }
-  var L=[],R=[],nx,ny,len,hw;
+  var full=w*0.5, hs=[], t;
   for(i=0;i<n;i++){
-    // Normal from the local tangent; endpoints borrow their neighbour's.
-    var i0=Math.max(0,i-1),i1=Math.min(n-1,i+1);
-    dx=pts[i1*2]-pts[i0*2];dy=pts[i1*2+1]-pts[i0*2+1];
-    len=Math.sqrt(dx*dx+dy*dy);
-    if(len<1e-6){nx=0;ny=0;}else{nx=-dy/len;ny=dx/len;}
-    hw=widthAt(Math.min(i,sp.length-1));
-    L.push((pts[i*2]+nx*hw).toFixed(1),(pts[i*2+1]+ny*hw).toFixed(1));
-    R.push((pts[i*2]-nx*hw).toFixed(1),(pts[i*2+1]-ny*hw).toFixed(1));
+    t=(raw[i]-FB_TAPER_SP0)/FB_TAPER_SPAN;
+    if(t<0)t=0; if(t>1)t=1;
+    t=t*t*(3-2*t);
+    hs.push(full*(1-(1-FB_TAPER_MIN)*t));
   }
-  var d='M'+L[0]+' '+L[1];
-  for(i=1;i<n;i++)d+='L'+L[i*2]+' '+L[i*2+1];
-  for(i=n-1;i>=0;i--)d+='L'+R[i*2]+' '+R[i*2+1];
-  return d+'Z';
+  var sg=FB_TAPER_SMOOTH, RW=3*sg, lo=0, hi=0, H=[], sw, sv, g;
+  for(i=0;i<n;i++){
+    while(cum[i]-cum[lo]>RW)lo++;
+    if(hi<i)hi=i;
+    while(hi+1<n&&cum[hi+1]-cum[i]<=RW)hi++;
+    sw=0;sv=0;
+    for(j=lo;j<=hi;j++){g=(cum[j]-cum[i])/sg;g=Math.exp(-0.5*g*g);sw+=g;sv+=g*hs[j];}
+    H.push(sw>0?sv/sw:hs[i]);
+  }
+  var sl=FB_TAPER_SLEW*w, m;
+  for(i=1;i<n;i++){
+    m=sl*(cum[i]-cum[i-1]);
+    if(H[i]<H[i-1]-m)H[i]=H[i-1]-m;else if(H[i]>H[i-1]+m)H[i]=H[i-1]+m;
+  }
+  for(i=n-2;i>=0;i--){
+    m=sl*(cum[i+1]-cum[i]);
+    if(H[i]<H[i+1]-m)H[i]=H[i+1]-m;else if(H[i]>H[i+1]+m)H[i]=H[i+1]+m;
+  }
+  var E=Math.min(FB_TAPER_END,S/3), e;
+  if(E>1e-6){
+    for(i=0;i<n;i++){
+      e=Math.min(cum[i],S-cum[i])/E;
+      if(e<0)e=0; if(e>1)e=1;
+      e=e*e*(3-2*e);
+      H[i]=full-(full-H[i])*e;
+    }
+  }
+  // ── Centreline: the same midpoint-quadratic curve _fbInkPath draws ──
+  // Samples X/Y with half-width R. Width is looked up by FRACTIONAL POINT
+  // INDEX: quad k runs from index k-0.5 to k+0.5 (the first from 0), which is
+  // the stretch of raw capture it was built from.
+  var X=[],Y=[],R=[];
+  function hAt(fi){
+    if(fi<=0)return H[0];
+    if(fi>=n-1)return H[n-1];
+    var a=Math.floor(fi),b=fi-a;
+    return H[a]+(H[a+1]-H[a])*b;
+  }
+  // Samples closer than 0.05 units are merged, keeping the larger radius: a
+  // near-zero segment has no direction to build a run on.
+  function put(x,y,r){
+    var q=X.length-1;
+    if(q>=0){dx=x-X[q];dy=y-Y[q];if(dx*dx+dy*dy<0.0025){if(r>R[q])R[q]=r;return;}}
+    X.push(x);Y.push(y);R.push(Math.max(FB_TAPER_RMIN,r));
+  }
+  var Px=pts[0],Py=pts[1],Pf=0,cx,cy,mx,my,bf,ang,s,a1,a2,tt,u1;
+  put(Px,Py,H[0]);
+  for(k=1;k<=n-2;k++){
+    cx=pts[k*2];cy=pts[k*2+1];
+    mx=(cx+pts[k*2+2])/2;my=(cy+pts[k*2+3])/2;
+    bf=k+0.5;
+    a1=Math.atan2(cy-Py,cx-Px);a2=Math.atan2(my-cy,mx-cx);
+    ang=Math.abs(a2-a1);if(ang>Math.PI)ang=2*Math.PI-ang;
+    // Subdivide by the quad's turn, not its length: a straight stretch is one
+    // sample, a hook gets up to eight.
+    s=Math.max(1,Math.min(8,Math.ceil(ang/FB_TAPER_SUB)));
+    for(j=1;j<=s;j++){
+      tt=j/s;u1=1-tt;
+      put(u1*u1*Px+2*u1*tt*cx+tt*tt*mx,
+          u1*u1*Py+2*u1*tt*cy+tt*tt*my,
+          hAt(Pf+(bf-Pf)*tt));
+    }
+    Px=mx;Py=my;Pf=bf;
+  }
+  put(pts[(n-1)*2],pts[(n-1)*2+1],H[n-1]);
+  // ── Outline: ribbon runs, split where the inner edge would fold ──
+  var N=X.length,out='';
+  function f(v){return v.toFixed(FB_TAPER_DP);}
+  function disc(i){
+    var a=f(X[i]-R[i]),b=f(X[i]+R[i]),y=f(Y[i]),rr=((+b-(+a))/2).toFixed(3);
+    out+='M'+a+' '+y+'A'+rr+' '+rr+' 0 0 0 '+b+' '+y+'A'+rr+' '+rr+' 0 0 0 '+a+' '+y+'Z';
+  }
+  disc(0);
+  if(N<2)return out;
+  // Segment directions.
+  var SX=[],SY=[],SL=[],L;
+  for(i=0;i+1<N;i++){
+    dx=X[i+1]-X[i];dy=Y[i+1]-Y[i];L=Math.sqrt(dx*dx+dy*dy);
+    SL.push(L);SX.push(L>1e-9?dx/L:1);SY.push(L>1e-9?dy/L:0);
+  }
+  // Split at an interior sample when the turn there, times the radius, is
+  // more than the shorter neighbouring segment: that is exactly the point at
+  // which the curve's radius of curvature drops below the half-width and the
+  // inner edge would run backwards over itself.
+  var cut=[true],cr,tn;
+  for(i=1;i<N-1;i++){
+    cr=SX[i-1]*SY[i]-SY[i-1]*SX[i];
+    tn=Math.atan2(Math.abs(cr),SX[i-1]*SX[i]+SY[i-1]*SY[i]);
+    cut.push(R[i]*tn>FB_TAPER_FOLD*Math.min(SL[i-1],SL[i]));
+  }
+  cut.push(true);
+  var st=0,en,nx,ny,ln,Lp=[],Rp=[],e0,e1;
+  while(st<N-1){
+    en=st+1;while(!cut[en])en++;
+    // Normals: the bisector of the two neighbouring segments inside the run,
+    // the segment's own normal at the run's two ends.
+    Lp.length=0;Rp.length=0;
+    for(k=st;k<=en;k++){
+      if(k===st){nx=-SY[k];ny=SX[k];}
+      else if(k===en){nx=-SY[k-1];ny=SX[k-1];}
+      else{nx=-(SY[k-1]+SY[k]);ny=SX[k-1]+SX[k];ln=Math.sqrt(nx*nx+ny*ny);
+        if(ln<1e-9){nx=-SY[k];ny=SX[k];}else{nx/=ln;ny/=ln;}}
+      // Overlap past each cut end by a fraction of the radius, so the run
+      // and the disc there overlap instead of abutting — abutting pieces of
+      // one path leave an anti-aliasing seam in Chromium.
+      var ox=0,oy=0,lap;
+      if(k===st&&st>0){lap=Math.min(FB_TAPER_LAP,R[k]*0.3,SL[k]*0.5);ox=-SX[k]*lap;oy=-SY[k]*lap;}
+      if(k===en&&en<N-1){lap=Math.min(FB_TAPER_LAP,R[k]*0.3,SL[k-1]*0.5);ox=SX[k-1]*lap;oy=SY[k-1]*lap;}
+      Lp.push(X[k]+ox+nx*R[k],Y[k]+oy+ny*R[k]);
+      Rp.push(X[k]+ox-nx*R[k],Y[k]+oy-ny*R[k]);
+    }
+    out+='M'+f(Lp[0])+' '+f(Lp[1]);
+    for(k=2;k<Lp.length;k+=2)out+='L'+f(Lp[k])+' '+f(Lp[k+1]);
+    for(k=Rp.length-2;k>=0;k-=2)out+='L'+f(Rp[k])+' '+f(Rp[k+1]);
+    out+='Z';
+    if(en<N-1)disc(en);
+    st=en;
+  }
+  disc(N-1);
+  return out;
+}
+// SESSION 127e — A TAP IS A DOT. Until now a stroke under two points was
+// deleted at pen-up ("a dot is not a stroke"), and a quick short dash often
+// was one: pointerup's own position was never recorded, and travel under
+// FB_INK_MIN_PX never produced a second point. The 3D canvas has drawn a tap as
+// a dot all along (its caps do it, Rule #155); notes now match.
+// A stroke is drawn as a dot when it has one point, or when every point sits
+// within a quarter of the pen width of the first — a ribbon of zero length has
+// no normals, both sides collapse onto the centreline and its arcs have equal
+// endpoints, which SVG skips: it would render as nothing at all.
+function _fbInkIsDot(p,w){
+  if(!p||p.length<4)return true;
+  var lim=(w||1)*0.25,lim2=lim*lim,i,dx,dy;
+  for(i=2;i+1<p.length;i+=2){
+    dx=p[i]-p[0];dy=p[i+1]-p[1];
+    if(dx*dx+dy*dy>lim2)return false;
+  }
+  return true;
+}
+function _fbInkDotD(x,y,r){
+  // 128: radius taken from the ROUNDED endpoints, large-arc 0 — see the named
+  // error in the _fbInkRibbon header. With large-arc 1 a rounding shortfall
+  // turned the dot into an oval.
+  var a=(x-r).toFixed(2),b=(x+r).toFixed(2),yy=y.toFixed(2),rr=((+b-(+a))/2).toFixed(3);
+  return 'M'+a+' '+yy+'A'+rr+' '+rr+' 0 0 0 '+b+' '+yy+'A'+rr+' '+rr+' 0 0 0 '+a+' '+yy+'Z';
 }
 // One place decides how a stroke becomes SVG, so the live path and the
 // committed path can never disagree about what a stroke looks like.
 function _fbInkApply(pa,st){
-  if(_fbTaper){
-    var d=_fbInkRibbon(st.p,st.w);
-    pa.setAttribute('d',d);
+  if(st.p&&st.p.length>=2&&_fbInkIsDot(st.p,st.w)){
+    // Same filled form in both taper modes: a round nib's full width.
+    pa.setAttribute('d',_fbInkDotD(st.p[0],st.p[1],Math.max(0.2,(st.w||1)*0.5)));
     pa.setAttribute('fill',st.c);
     pa.setAttribute('stroke',st.c);
-    // A hairline stroke on the fill closes the gap a pure fill leaves at very
-    // thin widths, where the two sides of the ribbon round to the same pixel.
     pa.setAttribute('stroke-width','0.4');
+    return;
+  }
+  // st.f (128, format 5.3): a FLAT stroke — a snapshot line. It has no speed,
+  // so the taper has nothing to read, and spacing-as-speed would invent one
+  // out of how densely the projection happened to sample the line.
+  if(_fbTaper&&!st.f){
+    var d=_fbInkRibbon(st.p,st.w,st.sp);
+    pa.setAttribute('d',d);
+    pa.setAttribute('fill',st.c);
+    // 128: no hairline stroke. It closed a sub-pixel gap in the single-loop
+    // outline; the pieces now overlap and FB_TAPER_RMIN keeps a floor, and a
+    // stroke would outline every internal piece for nothing.
+    pa.setAttribute('stroke','none');
   }else{
     pa.setAttribute('d',_fbInkPath(st.p));
     pa.setAttribute('fill','none');
@@ -10001,7 +10550,7 @@ function _fbNotePaint(d){
   g.setAttribute('transform','scale('+(n.s||1).toFixed(4)+')');
   while(g.firstChild)g.removeChild(g.firstChild);
   for(i=0;i<n.ink.length;i++){
-    if(n.ink[i].p.length<4)continue;
+    if(n.ink[i].p.length<2)continue;   // 127e: one point is a dot
     pa=document.createElementNS(FB_SVGNS,'path');
     pa.setAttribute('class','fb-ink');
     _fbInkApply(pa,n.ink[i]);
@@ -10166,6 +10715,18 @@ function _fbNoteBuild(n){
       toast('Reference reframed');
     });
     d.appendChild(bdg);
+    // 128: Freeze. Chrome like the pin and delete (focused, edit mode only),
+    // below the paper's bottom-left corner — across from resize, clear of the
+    // body so a slightly long press to orbit cannot land on it.
+    var frz=document.createElement('button');
+    frz.className='fb-nch fb-nfrz';
+    frz.textContent='FREEZE';
+    frz.title='Freeze this angle into a snapshot you can draw on';
+    frz.addEventListener('click',function(e){
+      e.stopPropagation();
+      _fbRefFreeze(n);
+    });
+    d.appendChild(frz);
   }else{
     svg=document.createElementNS(FB_SVGNS,'svg');
     svg.setAttribute('preserveAspectRatio','none');
@@ -10235,6 +10796,208 @@ function _fbRefAdd(){
   markContentDirty();
   toast('Reference to page '+(_fbIdx+1)+' — drag it to orbit');
   return n;
+}
+
+
+// ── SNAPSHOT NOTES (session 128, format 5.3) ──────────────────────
+// A note carrying a FROZEN vector projection of a 3D view, that you draw on.
+// Two ways in: the snapshot button in the palette (the current 3D view of the
+// page in front of you) and Freeze on a focused reference (orbit to the angle
+// first, then lock it).
+//
+// THE LINES ARE ORDINARY INK. Each projected polyline becomes an n.ink stroke
+// with f:1 (flat — see _fbInkApply). That is the whole of the "editable if
+// lighter" decision agreed before 127c: no second renderer, no second hit
+// test, and the eraser, undo and save all already know what an ink stroke is.
+// The price is that a snapshot line is erased WHOLE, like any note stroke.
+//
+// COLOUR (128a): the stroke's own colour, unchanged. 128 faded every line
+// 45% toward the paper so the snapshot sat under your ink; reverted on
+// request ("don't fade the strokes") — see handoff 128a. Opacity is NOT
+// carried: note ink has no alpha, and mixing toward the paper to fake it is
+// the fade that was asked to go.
+//
+// Same limits as a reference: flat width per stroke, no taper, no depth tint,
+// no Ref primitives. Hidden layers are left out (see _fbVisStrokes).
+//
+// Nothing here keeps a page index, so _fbRemapNotePages has nothing to track:
+// a snapshot is a picture of a page at a moment, not a view onto it.
+//  FB_SNAP_EPS     simplification tolerance at capture, note units
+//  FB_SNAP_MAXPTS  point budget for one snapshot; over it, the tolerance
+//                  doubles (up to 4 times) — a dense page must not put tens of
+//                  thousands of points into every autosave
+//  FB_SNAP_AR_MAX  longest side / shortest side of a new snapshot note
+//  FB_SNAP_WMIN    thinnest line written, note units
+//  FB_SNAP_WMAX    widest (a guard against a stroke almost at the eye)
+var FB_SNAP_EPS=0.35, FB_SNAP_MAXPTS=24000, FB_SNAP_AR_MAX=1.6, FB_SNAP_WMIN=0.6, FB_SNAP_WMAX=60;
+
+// Liang-Barsky against [0,W]x[0,H]. Returns [t0,t1] of the visible part of the
+// segment, or null. t0 is EXACTLY 0 when the start is inside and t1 exactly 1
+// when the end is — the caller relies on that to join runs by equality.
+function _fbClipSeg(x0,y0,x1,y1,W,H){
+  var t0=0,t1=1,dx=x1-x0,dy=y1-y0,P=[-dx,dx,-dy,dy],Q=[x0,W-x0,y0,H-y0],i,r;
+  for(i=0;i<4;i++){
+    if(P[i]===0){if(Q[i]<0)return null;continue;}
+    r=Q[i]/P[i];
+    if(P[i]<0){if(r>t1)return null;if(r>t0)t0=r;}
+    else{if(r<t0)return null;if(r<t1)t1=r;}
+  }
+  return [t0,t1];
+}
+// Ramer-Douglas-Peucker on a flat [x,y,...] array. Iterative (an explicit
+// stack), because a projected long stroke can be thousands of points and a
+// recursive form is one deep recursion per level on an old WebView.
+function _fbRdp(p,eps){
+  var n=p.length/2;
+  if(n<3)return p.slice();
+  var keep=new Array(n),st=[0,n-1],a,b,i,md,mi,dd,e2=eps*eps;
+  keep[0]=true;keep[n-1]=true;
+  while(st.length){
+    b=st.pop();a=st.pop();
+    md=-1;mi=-1;
+    for(i=a+1;i<b;i++){
+      dd=_fbSegD2(p[i*2],p[i*2+1],p[a*2],p[a*2+1],p[b*2],p[b*2+1]);
+      if(dd>md){md=dd;mi=i;}
+    }
+    if(md>e2){keep[mi]=true;st.push(a,mi,mi,b);}
+  }
+  var out=[];
+  for(i=0;i<n;i++)if(keep[i])out.push(p[i*2],p[i*2+1]);
+  return out;
+}
+// Strokes -> ink strokes in note-local units (0..W, 0..H). Returns
+// {lines, pts}. Pure apart from the shared projection scratch objects.
+function _fbSnapLines(strokes,cam,W,H,eps){
+  var lines=[],total=0,run=null,cur=null,lx=0,ly=0,have=false,first=0;
+  var mul=Math.pow(10,FB_INK_DP);
+  function add(x,y){
+    if(!run)run=[];
+    var m=run.length;
+    if(m>=2&&run[m-2]===x&&run[m-1]===y)return;
+    run.push(x,y);
+  }
+  function flush(){
+    if(run&&run.length>=2){
+      var q=_fbRdp(run,eps),o=[],i,x,y,m;
+      // Rounded AFTER simplifying, to the same precision pen capture stores
+      // (FB_INK_DP), with repeats dropped. A run that collapses to one point
+      // is kept: _fbInkApply draws it as a dot, which is what a very short
+      // stroke looks like from far away.
+      for(i=0;i<q.length;i+=2){
+        x=Math.round(q[i]*mul)/mul;y=Math.round(q[i+1]*mul)/mul;m=o.length;
+        if(m>=2&&o[m-2]===x&&o[m-1]===y)continue;
+        o.push(x,y);
+      }
+      // w is filled in by end(): the width is measured over the whole stroke.
+      lines.push({p:o,c:cur.c,w:0,f:1});
+      total+=o.length/2;
+    }
+    run=null;
+  }
+  _fbProjWalk(strokes,cam,W,H,
+    function(s){
+      cur={c:(typeof s.color==='string'&&s.color)?s.color:'#000000'};
+      have=false;run=null;first=lines.length;
+    },
+    function(px,py,start){
+      if(start||!have){flush();lx=px;ly=py;have=true;return;}
+      var c=_fbClipSeg(lx,ly,px,py,W,H);
+      if(!c){flush();}
+      else{
+        // Entering from outside the note starts a new run; leaving ends it.
+        // t exactly 0/1 means the endpoint itself, so a run that stays
+        // inside joins point to point by equality in add().
+        if(c[0]>0)flush();
+        add(c[0]>0?lx+(px-lx)*c[0]:lx, c[0]>0?ly+(py-ly)*c[0]:ly);
+        add(c[1]<1?lx+(px-lx)*c[1]:px, c[1]<1?ly+(py-ly)*c[1]:py);
+        if(c[1]<1)flush();
+      }
+      lx=px;ly=py;
+    },
+    function(s,w){
+      flush();
+      // Every run of this stroke gets the stroke's projected width, in note
+      // units — the same number the reference canvas strokes it with, so a
+      // frozen line is exactly as wide as the reference showed it. No upper
+      // clamp at the pen's maximum: a near marker is legitimately wider than
+      // anything the note pen draws.
+      var ww=Math.max(FB_SNAP_WMIN,Math.min(FB_SNAP_WMAX,Math.round(w*10)/10)),k;
+      for(k=first;k<lines.length;k++)lines[k].w=ww;
+    });
+  return {lines:lines,pts:total};
+}
+// With the point budget applied. Never returns more than FB_SNAP_MAXPTS
+// unless four doublings of the tolerance still could not get there, in which
+// case it returns the last attempt and says so.
+function _fbSnapCapture(strokes,cam,W,H){
+  var eps=FB_SNAP_EPS,r=_fbSnapLines(strokes,cam,W,H,eps),k;
+  for(k=0;k<4&&r.pts>FB_SNAP_MAXPTS;k++){
+    eps*=2;r=_fbSnapLines(strokes,cam,W,H,eps);
+  }
+  if(r.pts>FB_SNAP_MAXPTS)toast('Dense view \u2014 snapshot simplified');
+  return r.lines;
+}
+// The live camera, re-framed for a note of W x H. A clone, never the camera
+// itself: a snapshot must not be able to touch the view you draw in (same
+// rule as _fbRefAim). Perspective keeps its vertical field and takes the
+// note's aspect; orthographic keeps its height and centre.
+function _fbSnapCamera(W,H){
+  var c=activeCam().clone();
+  if(c.isOrthographicCamera){
+    var hh=(c.top-c.bottom)/2,cy=(c.top+c.bottom)/2,cx=(c.left+c.right)/2,hw=hh*W/H;
+    c.left=cx-hw;c.right=cx+hw;c.top=cy+hh;c.bottom=cy-hh;
+  }else c.aspect=W/H;
+  c.updateProjectionMatrix();
+  return c;
+}
+function _fbSnapAdd(){
+  // Shape follows the view, within FB_SNAP_AR_MAX: the short side is a
+  // reference's side, the long side is what the screen's aspect makes it.
+  var src=activeCam();
+  var ar=src.isOrthographicCamera?((src.right-src.left)/((src.top-src.bottom)||1)):(src.aspect||1);
+  if(!(ar>0))ar=1;
+  var W,H;
+  if(ar>=1){H=FB_REF_H;W=Math.round(H*Math.min(ar,FB_SNAP_AR_MAX));}
+  else{W=FB_REF_W;H=Math.round(W*Math.min(1/ar,FB_SNAP_AR_MAX));}
+  // The page in front of you. While it is the loaded page its strokes are in
+  // the live scene, which is newer than pages[curPage] if anything changed
+  // since the flipbook opened; any other page has only its stored strokes.
+  var list=(_fbIdx===curPage)?_encStrokes(strokes):((pages[_fbIdx]&&pages[_fbIdx].strokes)||[]);
+  var lines=_fbSnapCapture(list,_fbSnapCamera(W,H),W,H);
+  if(!lines.length){toast('Nothing in view to snapshot');return null;}
+  var n={x:Math.round(-_fbTX/_fbZ-W/2),
+         y:Math.round(-_fbTY/_fbZ-H/2),
+         w:W,h:H,s:1,
+         pg:_fbPinNew?_fbIdx:null,c:null,
+         ink:lines};
+  bookNotes.push(n);
+  if(!_fbNotesEdit){_fbNotesEdit=true;_fbSyncNotesUI();}
+  _fbNotesRender();
+  _fbNoteFocus(n);   // see _fbRefAdd
+  markContentDirty();
+  toast('Snapshot of page '+(_fbIdx+1)+' \u2014 draw over it');
+  return n;
+}
+// Freeze a reference in place: its current angle becomes snapshot ink on the
+// same note (same position, size, paper, pin). UNDOABLE, unlike add — it
+// throws away a camera you may have spent a while finding. The entry keeps the
+// ref object itself, so undo restores the exact angle, dolly and pan.
+function _fbRefFreeze(n){
+  if(!n||!n.ref)return;
+  var sc=n.s||1, W=n.w/sc, H=n.h/sc, pg=pages[n.ref.page];
+  // Same camera and same stroke source _fbRefPaint uses, so the frozen lines
+  // are the lines the reference was showing.
+  var lines=_fbSnapCapture(pg?(pg.strokes||[]):[],_fbRefAim(n.ref,W,H),W,H);
+  var i;
+  for(i=0;i<lines.length;i++)n.ink.push(lines[i]);
+  _fbUndoPush({t:'frz',n:n,ref:n.ref,st:lines});
+  n.ref=null;
+  // A rebuild, not a repaint: a reference is a canvas wired for orbit and an
+  // ink note is an svg wired for the pen. Both are decided in _fbNoteBuild.
+  _fbNotesRender();
+  _fbNoteFocus(n);
+  markContentDirty();
+  toast(lines.length?'Frozen \u2014 draw over it':'Frozen (nothing was in view)');
 }
 
 function _fbNoteAdd(){
@@ -10407,9 +11170,29 @@ function _fbNoteWire(d,n,svg,grip,rsz){
   // _inkPid: the ONE pointer allowed to extend this stroke. Without it a
   // second pointer's move could feed points into a stroke the first started.
   var iDown=false,cur=null,live=null,lx=0,ly=0,_inkPid=-1;
+  // 127c. Raw samples of the last FB_SPEED_WIN ms (client px, event clock),
+  // EVERY sample whether or not it became a point — the speed estimate needs
+  // the path the pen actually took, not the thinned one. Reset per stroke.
+  var spT=[],spX=[],spY=[];
+  // 127c. One repaint per frame, not one per point. With coalesced events a
+  // single move can carry four points, and each repaint rebuilds the whole
+  // path string — per point, cost grew with the stroke on exactly the long
+  // strokes where dropped frames drop pointer events.
+  var paintQ=false;
+  function paintSoon(){
+    if(paintQ)return;
+    paintQ=true;
+    requestAnimationFrame(function(){
+      paintQ=false;
+      // live and cur are null once the stroke ended or aborted; endInk has
+      // already painted the final state itself.
+      if(live&&cur)_fbInkApply(live,cur);
+    });
+  }
   function abortInk(){
     if(!iDown)return;
     iDown=false;
+    if(_fbInkPen)_fbPenUpAt=Date.now();
     if(cur){var k=n.ink.indexOf(cur);if(k>=0)n.ink.splice(k,1);}
     if(live&&live.parentNode)live.parentNode.removeChild(live);
     cur=null;live=null;
@@ -10449,6 +11232,7 @@ function _fbNoteWire(d,n,svg,grip,rsz){
     if(!eDown)return;
     if(e&&e.pointerId!=null&&e.pointerId!==_inkPid)return;
     eDown=false;_inkPid=-1;
+    if(_fbInkPen)_fbPenUpAt=Date.now();
     if(e&&e.pointerId!=null){try{svg.releasePointerCapture(e.pointerId);}catch(ex){}}
     if(_fbInkActive===endErase)_fbInkActive=null;
     // Once per gesture, not once per stroke removed — a drag across ten
@@ -10460,17 +11244,64 @@ function _fbNoteWire(d,n,svg,grip,rsz){
     eMoved=false;eItems=[];
   }
 
+  // ── iPad Apple Pencil: the 3D canvas's fix, now on the note (127f) ──
+  // iPadOS delivers a Pencil contact through the TOUCH pipeline as well
+  // (touchType 'stylus'), and unless that touch is preventDefault()ed the
+  // system is free to claim it — the pointer sequence then ends in a
+  // pointercancel, or never starts. The canvas has done this since the
+  // Pencil fix near "Unified pointer input routing"; the note svg never did,
+  // which is why taps and short strokes on a sticky went missing every few
+  // attempts while the canvas kept every one. Capture phase and passive:false,
+  // same as the canvas. Stylus only: finger touches keep their defaults, and
+  // Android never sets touchType, so this is a no-op there.
+  //
+  // ON THE SVG, per note, not on a shared ancestor: the note's chrome buttons
+  // sit outside the svg and some of them still rely on click, which a
+  // preventDefault()ed touchstart would suppress. Element listeners go away
+  // with the element, so this is not the Rule #152 leak.
+  function _fbStylusTouch(e){
+    if(!_fbNotesEdit||!e.touches)return;
+    for(var i=0;i<e.touches.length;i++){
+      if(e.touches[i].touchType==='stylus'){e.preventDefault();return;}
+    }
+  }
+  svg.addEventListener('touchstart',_fbStylusTouch,{capture:true,passive:false});
+  svg.addEventListener('touchmove',_fbStylusTouch,{capture:true,passive:false});
+
   svg.addEventListener('pointerdown',function(e){
     if(!_fbNotesEdit)return;
+    // 127f: the pointer half of the same fix, as the canvas does for pens.
+    if(e.pointerType==='pen')e.preventDefault();
     // STYLUS MODE: only the pen draws, the finger navigates. Reuses the app's
     // existing global rather than adding a second, separate stylus setting.
     if(stylusOnly&&e.pointerType!=='pen')return;
+    // 127d: a touch in the palm window is not a finger, so it draws nothing.
+    if(e.pointerType==='touch'&&_fbPalmWindow())return;
     // A SECOND FINGER IS NEVER A SECOND PEN.
-    if(_fbInkActive)return;
-    if(_fbMtMax>=2)return;
+    if(_fbInkActive){
+      // ...BUT A PEN OUTRANKS A FINGER (session 127c). Outside stylus mode a
+      // palm that touches down first starts a touch stroke, and the Pencil
+      // arriving a moment later used to be refused right here — the visible
+      // result was a pen that "skipped" the stroke entirely. The touch gesture
+      // is ended (a touch stroke is dropped, a touch erase is committed) and
+      // the pen takes over. The stage keeps the pen out of its ledger, so the
+      // palm it already counted cannot turn this into a pinch.
+      if(e.pointerType==='pen'&&!_fbInkPen){
+        var prev=_fbInkActive;
+        _fbInkActive=null;
+        prev();
+      }else return;
+    }
+    // The multi-touch bail is about FINGERS. A pen is never refused by it
+    // (127d): palm contacts already counted would otherwise veto the Pencil.
+    // Instead the pen ends whatever the fingers had started.
+    if(e.pointerType==='pen'){
+      if(_fbStagePenTakeover)_fbStagePenTakeover();
+    }else if(_fbMtMax>=2)return;
     if(_fbErase){
       eDown=true;eMoved=false;eItems=[];
       _fbInkActive=endErase;
+      _fbInkPen=(e.pointerType==='pen');
       _inkPid=e.pointerId;
       _fbDocEnd(endErase,true);
       try{svg.setPointerCapture(e.pointerId);}catch(ex){}
@@ -10478,38 +11309,62 @@ function _fbNoteWire(d,n,svg,grip,rsz){
       return;
     }
     iDown=true;
-    cur={p:[],c:_fbInkColor,w:_fbInkSize};
+    cur={p:[],sp:[],c:_fbInkColor,w:_fbInkSize};   // sp: 127c, one speed per point
     n.ink.push(cur);
     live=document.createElementNS(FB_SVGNS,'path');
     live.setAttribute('class','fb-ink');
     svg.firstChild.appendChild(live);
     _fbInkActive=abortInk;
+    _fbInkPen=(e.pointerType==='pen');
     _inkPid=e.pointerId;
     _fbDocEnd(endInk,true);
     try{svg.setPointerCapture(e.pointerId);}catch(ex){}
-    pushPt(e,true);
+    spT=[];spX=[];spY=[];
+    pushEvt(e,true);
+    if(live)_fbInkApply(live,cur);
   });
   svg.addEventListener('pointermove',function(e){
     if(eDown){
       if(e.pointerId!==_inkPid)return;
-      if(_fbMtMax>=2){endErase(e);return;}
+      if(e.pointerType==='pen')e.preventDefault();   // 127f
+      if(!_fbInkPen&&_fbMtMax>=2){endErase(e);return;}
       eraseAt(e);
       return;
     }
     if(!iDown||e.pointerId!==_inkPid)return;
-    if(_fbMtMax>=2){abortInk();return;}
-    pushPt(e,false);
+    if(e.pointerType==='pen')e.preventDefault();   // 127f, as the canvas
+    if(!_fbInkPen&&_fbMtMax>=2){abortInk();return;}
+    pushEvt(e,false);
+    paintSoon();
   });
   function endInk(e){
     _fbDocEnd(endInk,false);
     if(!iDown)return;
     if(e&&e.pointerId!=null&&e.pointerId!==_inkPid)return;
+    // 127e: the lift position is a real sample. It was never recorded, so a
+    // short quick dash whose moves stayed under FB_INK_MIN_PX ended as one
+    // point and was thrown away. Recorded before iDown drops, only for the
+    // stroke's own pointer, and only if it actually differs from the last
+    // point — a duplicate adds nothing and would zero a tangent.
+    if(e&&e.pointerId===_inkPid&&cur&&e.type==='pointerup'){
+      try{
+        var r0=svg.getBoundingClientRect();
+        if(r0.width&&r0.height)pushPt(e,false,r0,e.timeStamp,0.5);
+      }catch(ex){}
+    }
     iDown=false;_inkPid=-1;
+    if(_fbInkPen)_fbPenUpAt=Date.now();
     if(e&&e.pointerId!=null){try{svg.releasePointerCapture(e.pointerId);}catch(ex){}}
-    if(cur&&cur.p.length<4){
-      var k=n.ink.indexOf(cur);if(k>=0)n.ink.splice(k,1);   // a dot is not a stroke
+    // 127e: only a stroke with NO point is discarded (the rect was zero at
+    // pen-down). One point is a tap, and a tap is a dot.
+    if(cur&&cur.p.length<2){
+      var k=n.ink.indexOf(cur);if(k>=0)n.ink.splice(k,1);
       if(live&&live.parentNode)live.parentNode.removeChild(live);
     }else if(cur){
+      // 127c: the live node IS the committed node, and repaints are batched
+      // to the next frame — so the last few points (and the end cap that
+      // follows them) are painted here, before live is let go.
+      if(live)_fbInkApply(live,cur);
       // Pushed here and nowhere else: this is the only point at which a
       // stroke is known to have survived the dot test. abortInk() removes
       // one that never got here, so there is nothing to undo for it.
@@ -10523,6 +11378,12 @@ function _fbNoteWire(d,n,svg,grip,rsz){
   svg.addEventListener('pointercancel',function(e){
     if(e&&e.pointerId!=null&&e.pointerId!==_inkPid)return;
     if(eDown){endErase(e);return;}
+    // 127f: A PEN CANCEL KEEPS WHAT WAS DRAWN. For a finger, cancel means the
+    // gesture became navigation, so dropping the stroke is right. A pen is
+    // never a pinch (Rules #174-#175) — a cancel on a pen is the SYSTEM taking
+    // the contact, and deleting ink the user watched appear is the worst
+    // response to that. endInk(null) commits it without adding a lift point.
+    if(iDown&&_fbInkPen){endInk(null);return;}
     abortInk();
   });
   // THE SAFETY NET, and the actual cause of "writing continues after lifting
@@ -10534,6 +11395,14 @@ function _fbNoteWire(d,n,svg,grip,rsz){
   // browser revoking capture mid-stroke.
   svg.addEventListener('lostpointercapture',function(e){
     if(e&&e.pointerId!=null&&e.pointerId!==_inkPid)return;
+    // 127d: a Pencil reuses its pointerId from stroke to stroke. If the loss
+    // notice for the PREVIOUS stroke arrives after the next one has taken the
+    // same id and re-captured, the id test above passes and the new stroke
+    // would be ended on its first point. A capture that is still held was not
+    // lost — this notice is about an earlier one.
+    if(e&&e.pointerId!=null&&typeof svg.hasPointerCapture==='function'){
+      try{if(svg.hasPointerCapture(e.pointerId))return;}catch(ex){}
+    }
     // Erase runs on the same capture, so it needs the same net. Without this
     // an erase gesture whose capture the browser revoked would keep deleting
     // strokes on every subsequent move — the Rule #147 failure with teeth.
@@ -10541,24 +11410,72 @@ function _fbNoteWire(d,n,svg,grip,rsz){
     endInk(null);
   });
 
-  function pushPt(e,first){
-    if(!first&&Math.abs(e.clientX-lx)+Math.abs(e.clientY-ly)<FB_INK_MIN_PX)return;
-    lx=e.clientX;ly=e.clientY;
-    var r=svg.getBoundingClientRect();
+  // 127c. One pointer event -> its coalesced samples -> points. A pen
+  // reporting faster than the page renders delivers several positions per
+  // pointermove; reading only the event's own position cut a quick stroke
+  // into long straight chords. Safari has had getCoalescedEvents() since 18.2,
+  // Chrome for longer; older WebViews fall back to the event itself.
+  //
+  // THE POINTER ID IS CHECKED ON THE PARENT EVENT ONLY (the caller does it).
+  // Safari's coalesced events have been seen without pointerId or target, so
+  // filtering the list by id would throw every sample away on the device this
+  // is for.
+  function pushEvt(e,first){
+    var list=null,r,i;
+    if(!first&&typeof e.getCoalescedEvents==='function'){
+      try{list=e.getCoalescedEvents();}catch(ex){list=null;}
+    }
+    if(!list||!list.length)list=[e];
+    // One layout read per event rather than per point. Nothing moves the
+    // note while a stroke is live — the stage refuses to pan under a pen.
+    r=svg.getBoundingClientRect();
     if(!r.width||!r.height)return;
+    for(i=0;i<list.length;i++)pushPt(list[i],first&&i===0,r,e.timeStamp);
+  }
+  // minPx (127e): travel needed before this sample becomes a point. Omitted
+  // means FB_INK_MIN_PX; the lift passes a smaller one.
+  function pushPt(ev,first,r,parentT,minPx){
+    var cx=ev.clientX, cy=ev.clientY;
+    if(!isFinite(cx)||!isFinite(cy))return;
+    var t=+ev.timeStamp;
+    if(!(t>0))t=+parentT||0;
+    // Every raw sample feeds the speed window, recorded or not.
+    spT.push(t);spX.push(cx);spY.push(cy);
+    // Drop the oldest while the next-oldest alone still spans the window, so
+    // what is kept always covers at least FB_SPEED_WIN ms once it can.
+    while(spT.length>2&&t-spT[1]>=FB_SPEED_WIN){spT.shift();spX.shift();spY.shift();}
+    if(!first&&Math.abs(cx-lx)+Math.abs(cy-ly)<(minPx==null?FB_INK_MIN_PX:minPx))return;
+    lx=cx;ly=cy;
     // THE CLIENT RECT IS THE RIGHT CALL HERE, and the wrong one in
     // _fbMeasure() — see Rule #143. Dividing by r.width makes this
     // independent of both the zoom and the paper size by construction rather
     // than by arithmetic somebody has to keep in step.
-    var u=(e.clientX-r.left)*n.w/r.width/(n.s||1);
-    var v=(e.clientY-r.top)*n.h/r.height/(n.s||1);
+    var k=n.w/r.width/(n.s||1);
+    var u=(cx-r.left)*k;
+    var v=(cy-r.top)*n.h/r.height/(n.s||1);
     u=Math.max(0,Math.min(n.w/(n.s||1),u));
     v=Math.max(0,Math.min(n.h/(n.s||1),v));
-    cur.p.push(Number(u.toFixed(FB_INK_DP)),Number(v.toFixed(FB_INK_DP)));
-    // One path node, one d rewrite per point. The committed paths are
-    // untouched, so cost tracks the CURRENT stroke's length rather than how
-    // much is already on the note.
-    if(live)_fbInkApply(live,cur);
+    u=Number(u.toFixed(FB_INK_DP));v=Number(v.toFixed(FB_INK_DP));
+    // Speed in the stored unit (see FB_SPEED_FRAME): client px over the window
+    // -> px per 1/60 s -> note-local units. A window with no usable clock
+    // (identical or missing timestamps) falls back to this point's spacing,
+    // which is what the pre-127c renderer would have used anyway.
+    var sp=0,el=t-spT[0],j,L=0,dx,dy,m=cur.p.length;
+    if(!first){
+      if(el>0.5){
+        for(j=1;j<spT.length;j++){
+          dx=spX[j]-spX[j-1];dy=spY[j]-spY[j-1];
+          L+=Math.sqrt(dx*dx+dy*dy);
+        }
+        sp=L/el*FB_SPEED_FRAME*k;
+      }else if(m>=2){
+        dx=u-cur.p[m-2];dy=v-cur.p[m-1];
+        sp=Math.sqrt(dx*dx+dy*dy);
+      }
+    }
+    cur.p.push(u,v);
+    if(!cur.sp)cur.sp=[];
+    cur.sp.push(Number(sp.toFixed(1)));
   }
 }
 
@@ -11583,6 +12500,23 @@ function togglePages(){if(_fbOpen)closeFlipbook();else openFlipbook();}
   // Springs a finger-tracked turn back without committing. Used when a second
   // contact arrives mid-drag: the pinch takes over, and a turn frozen at 40°
   // would otherwise sit there until the next gesture.
+  // 127d. A pen about to draw ends what the fingers were doing: a pinch or
+  // pan in progress stops where it is, and every non-pen contact leaves the
+  // ledger (its later move/up is then ignored by the _fbPtrs guard). Without
+  // this, palm contacts counted before the pen landed kept a pinch running
+  // under the stroke, or kept _fbMtMax at 2.
+  _fbStagePenTakeover=function(){
+    var k,kept={},n=0;
+    for(k in _fbPtrs){
+      if(!_fbPtrs.hasOwnProperty(k))continue;
+      if(_fbPtrs[k].t==='pen'){kept[k]=_fbPtrs[k];n++;}
+      else{try{stage.releasePointerCapture(+k);}catch(ex){}}
+    }
+    if(_fbDrag)_fbAbortDrag();
+    _fbPtrs=kept;_fbPtrN=n;_fbMtMax=n;
+    _fbPinch=false;_fbPan=false;
+    if(n===0)_fbGestOwner=null;
+  };
   function _fbAbortDrag(){
     if(!_fbDrag)return;
     var dur=Math.max(FB_SETTLE_MIN_MS,FB_TURN_MS*_fbDragProg/180);
@@ -11590,7 +12524,27 @@ function togglePages(){if(_fbOpen)closeFlipbook();else openFlipbook();}
   }
   if(stage){
     stage.addEventListener('pointerdown',function(e){
-      _fbPtrs[e.pointerId]={x:e.clientX,y:e.clientY};
+      // A PEN STROKE IS NEVER A PINCH (session 127c). The note's svg handler
+      // runs before this one (target before bubble), so by now _fbInkActive
+      // says whether that contact started a stroke. While a pen holds it:
+      //  - a TOUCH contact is a palm or a resting finger. It stays out of the
+      //    ledger entirely, so it cannot raise _fbMtMax (which aborted the
+      //    stroke on the pen's next move), cannot start a pinch, and its
+      //    move/up are ignored by the _fbPtrs guard below.
+      //  - the PEN itself also stays out when a palm got here first. Counted,
+      //    it would be the SECOND contact: pinch mode, with the palm as the
+      //    other finger. Its focus still moves to the note it is drawing on,
+      //    which the first-contact branch would have done had it been first.
+      // Finger ink (no pen) is untouched: two fingers are still a pinch.
+      // 127d: the palm window, not only a live pen, keeps a touch out.
+      if(e.pointerType==='touch'&&_fbPalmWindow())return;
+      if(_fbInkActive&&_fbInkPen){
+        if(e.pointerType==='pen'&&_fbPtrN>0){
+          if(_fbNotesEdit&&_fbOwnerOf(e.target)==='note')_fbNoteFocus(_fbOwnerNote);
+          return;
+        }
+      }
+      _fbPtrs[e.pointerId]={x:e.clientX,y:e.clientY,t:e.pointerType};
       _fbPtrN++;
       if(_fbPtrN>_fbMtMax)_fbMtMax=_fbPtrN;
       if(_fbPtrN===1){
@@ -11803,6 +12757,23 @@ function togglePages(){if(_fbOpen)closeFlipbook();else openFlipbook();}
     })();
     on(refB,function(){_fbRefAdd();});
     pal.appendChild(refB);
+
+    // 128: snapshot. Same sticky; on it, a small wire cube — the 3D drawn
+    // as LINES, which is what the note will hold, as against the reference's
+    // "3D", which is a view you can still move.
+    var snapB=mk('Snapshot of the current 3D view — draw on it');
+    (function(){
+      var svg=_fbSticky();
+      var cube=document.createElementNS(FB_SVGNS,'path');
+      cube.setAttribute('d','M4.3 6.1L7 4.6L9.7 6.1V9.1L7 10.6L4.3 9.1ZM4.3 6.1L7 7.6L9.7 6.1M7 7.6V10.6');
+      cube.setAttribute('stroke','currentColor');
+      cube.setAttribute('stroke-width','0.9');
+      cube.setAttribute('stroke-linejoin','round');
+      svg.appendChild(cube);
+      snapB.appendChild(svg);
+    })();
+    on(snapB,function(){_fbSnapAdd();});
+    pal.appendChild(snapB);
 
     var pinB=mk('New notes: every page / this page');
     function syncPin(){pinB.textContent=_fbPinNew?String(_fbIdx+1):'\u221e';pinB.classList.toggle('on',_fbPinNew);}
@@ -12910,7 +13881,10 @@ function sceneData(){
   // notes is BOOK-level, not per page — a note that follows you around is
   // written once here instead of duplicated onto all 24. See the comment above
   // bookNotes for the measured cost of the alternative.
-  return{version:5.1,layers:_layerStateOut(),curPage:curPage,notes:bookNotes,pages:allPages,strokes:curStrokes,primitives:curPrims,surf:{type:(surfType==='loft'||surfType==='extrude'||surfType==='none')?'plane':surfType,plane:curPlane,px:surfPos.x,py:surfPos.y,pz:surfPos.z,rx:surfEuler.x,ry:surfEuler.y,rz:surfEuler.z,sc:surfScale,sax:surfScaleAxes.x,say:surfScaleAxes.y,saz:surfScaleAxes.z}};
+  // 5.2 (127c): notes[i].ink[j].sp, optional per-point speed. Additive.
+  // 5.3 (128): notes[i].ink[j].f, optional flag, 1 = flat (snapshot line).
+  // Additive; a 5.2 build ignores it and draws the line tapered from spacing.
+  return{version:5.3,layers:_layerStateOut(),curPage:curPage,notes:bookNotes,pages:allPages,strokes:curStrokes,primitives:curPrims,surf:{type:(surfType==='loft'||surfType==='extrude'||surfType==='none')?'plane':surfType,plane:curPlane,px:surfPos.x,py:surfPos.y,pz:surfPos.z,rx:surfEuler.x,ry:surfEuler.y,rz:surfEuler.z,sc:surfScale,sax:surfScaleAxes.x,say:surfScaleAxes.y,saz:surfScaleAxes.z}};
 }
 function loadData(data){
   clearAll();
@@ -15787,7 +16761,8 @@ window._setSnapEnabled=function(v){
       var hits=rc.intersectObject(surfMesh,false);
       surfMesh.material.side=prevSide;
       if(hits.length>0&&hits[0].face){
-        var fn=hits[0].face.normal.clone().applyQuaternion(surfGroup.quaternion).normalize();
+        // 128b: normal matrix, not the group quaternion (_faceWorldNormal).
+        var fn=_faceWorldNormal(hits[0].face,surfMesh,new THREE.Vector3());
         if(fn.dot(groupNorm)<0)fn.negate();
         up=fn;
       }
